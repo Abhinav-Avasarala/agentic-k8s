@@ -1,0 +1,8 @@
+typer[all]
+rich
+openai
+langgraph
+kubernetes
+google-cloud-container
+nemoguardrails
+python-dotenv
