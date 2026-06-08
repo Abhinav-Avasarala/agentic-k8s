@@ -8,18 +8,36 @@ from typing import Any
 console = Console()
 
 
-def print_plan(ops: list[dict[str, Any]]) -> None:
+def print_plan(ops: list[dict[str, Any]], risks: list | None = None) -> None:
+    from kube_mind.guardrails.guard import RiskLevel
+
     table = Table(title="Planned Operations", box=box.ROUNDED, show_lines=True)
     table.add_column("#", style="dim", width=4)
     table.add_column("Type", style="cyan")
     table.add_column("Action", style="bold")
     table.add_column("Params", style="white")
+    table.add_column("Risk", width=10)
 
     for i, op in enumerate(ops, 1):
         params = ", ".join(f"{k}={v}" for k, v in op.get("params", {}).items())
-        table.add_row(str(i), op.get("type", ""), op.get("action", ""), params)
+        level = risks[i - 1][1] if risks else RiskLevel.SAFE
+
+        if level == RiskLevel.CONFIRM_BY_NAME:
+            risk_cell = Text("⛔ HIGH", style="bold red")
+        elif level == RiskLevel.WARN:
+            risk_cell = Text("⚠  WARN", style="bold yellow")
+        else:
+            risk_cell = Text("-", style="dim")
+
+        table.add_row(str(i), op.get("type", ""), op.get("action", ""), params, risk_cell)
 
     console.print(table)
+
+    if risks:
+        for _, level, reason in risks:
+            if reason:
+                marker = "[red]⛔[/red]" if level == RiskLevel.CONFIRM_BY_NAME else "[yellow]⚠[/yellow]"
+                console.print(f"  {marker} {reason}")
 
 
 def print_diff(delta: dict[str, Any]) -> None:

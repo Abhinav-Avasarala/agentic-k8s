@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import nest_asyncio
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,28 @@ nest_asyncio.apply()
 
 _CONFIG_DIR = Path(__file__).parent / "config"
 _PROTECTED_POOLS = {"default-pool", "default"}
+
+
+class RiskLevel(Enum):
+    SAFE = "safe"
+    WARN = "warn"                # yellow warning, plain y/n still works
+    CONFIRM_BY_NAME = "confirm"  # must type the resource name to proceed
+
+
+_RISKY_ACTIONS: dict[str, tuple[RiskLevel, str]] = {
+    "delete_node_pool": (
+        RiskLevel.CONFIRM_BY_NAME,
+        "deletes a node pool and evicts all workloads running on it",
+    ),
+    "drain_node": (
+        RiskLevel.CONFIRM_BY_NAME,
+        "evicts all pods from the node — they will be rescheduled elsewhere",
+    ),
+    "cordon_node": (
+        RiskLevel.WARN,
+        "marks the node unschedulable — no new pods will be placed on it",
+    ),
+}
 
 _rails = None
 
@@ -46,6 +69,23 @@ def check_intent(intent: str) -> None:
                 "Blocked by safety guardrails: the request is either dangerous "
                 "or unrelated to Kubernetes infrastructure."
             )
+
+
+def risk_check(ops: list[dict[str, Any]]) -> list[tuple[dict, RiskLevel, str]]:
+    """Classify each op by risk level. Returns a list parallel to ops.
+
+    Each entry is (op, RiskLevel, reason_string). Safe ops get RiskLevel.SAFE
+    and an empty reason. Callers use this to decide the confirmation UX.
+    """
+    results = []
+    for op in ops:
+        action = op.get("action", "")
+        if action in _RISKY_ACTIONS:
+            level, reason = _RISKY_ACTIONS[action]
+            results.append((op, level, reason))
+        else:
+            results.append((op, RiskLevel.SAFE, ""))
+    return results
 
 
 def check_ops(ops: list[dict[str, Any]]) -> None:

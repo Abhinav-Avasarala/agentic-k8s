@@ -19,18 +19,18 @@ You describe what you want. The agent checks safety, plans the minimum set of op
 ```
 Your intent (plain English)
         ↓
-  NeMo Guardrails          ←  blocks dangerous or off-topic intents
+  NeMo Guardrails (intent)  ←  blocks dangerous / off-topic intents before planning
         ↓ (if safe)
-  LangGraph Agent
-        ↓
   GPT-4o Planner  ←  reads ~/.kube-mind/state.json
         ↓
   Planned ops (gcloud / kubectl / verify)
         ↓
-  NeMo Guardrails (op-level)  ←  blocks destructive ops (delete primary pool, resize to 0)
+  NeMo Guardrails (op-level)  ←  hard blocks: delete primary pool, resize to 0
         ↓ (if safe)
-  Apply? [y/n]
+  Risk classifier  ←  tags each op: ⛔ CONFIRM_BY_NAME / ⚠ WARN / safe
         ↓
+  Confirm gate  ←  type resource name for ⛔, plain y/n for ⚠ and safe ops
+        ↓ (confirmed)
   gcloud Python SDK  →  GKE node pool operations
   K8s Python SDK     →  deployment / node operations
         ↓
@@ -65,7 +65,7 @@ kube_mind/
 │   ├── graph.py      # LangGraph graph: planner → executor
 │   └── prompts.py    # System prompt for GPT-4o
 ├── guardrails/
-│   ├── guard.py      # check_intent (NeMo) and check_ops (pure Python)
+│   ├── guard.py      # check_intent (NeMo), check_ops, risk_check, RiskLevel
 │   └── config/
 │       ├── config.yml    # NeMo config — model and active rails
 │       ├── prompts.yml   # Custom Kubernetes safety prompt for self_check_input
@@ -248,9 +248,57 @@ kube-mind status
 # Shows both default-pool and batch-pool as RUNNING
 ```
 
-### 7 — Test op-level guardrail
+### 7 — Test confirm gate: CONFIRM_BY_NAME path
 
-The op-level check runs after planning and catches destructive ops that slipped past the intent check. It is pure Python with no LLM call.
+`batch-pool` now exists in state.json. Ask kube-mind to delete it — the planner generates a `delete_node_pool` op which is tagged `⛔ HIGH`. Type the wrong name to abort safely, no GKE call is made.
+
+```bash
+kube-mind "remove the batch-pool node pool"
+```
+
+Expected — plan shows `⛔ HIGH`, then name prompt:
+```
+→ remove the batch-pool node pool
+Checking safety...
+Planning...
+
+  Planned Operations
+  # │ Type   │ Action           │ Params          │ Risk
+  1 │ gcloud │ delete_node_pool │ name=batch-pool │ ⛔ HIGH
+  ⛔ deletes a node pool and evicts all workloads running on it
+
+This plan contains high-risk operations. Type the resource name to confirm each one.
+
+  ⛔ delete_node_pool — deletes a node pool and evicts all workloads running on it
+     Type batch-pool to confirm: wrong-name
+Confirmation did not match — aborted.
+```
+
+### 8 — Test confirm gate: WARN path
+
+```bash
+kube-mind "cordon gke-node-1"
+```
+
+Expected — plan shows `⚠ WARN`, then plain y/n:
+```
+→ cordon gke-node-1
+Checking safety...
+Planning...
+
+  Planned Operations
+  # │ Type    │ Action      │ Params           │ Risk
+  1 │ kubectl │ cordon_node │ node=gke-node-1  │ ⚠  WARN
+  ⚠ marks the node unschedulable — no new pods will be placed on it
+
+⚠  Warning: marks the node unschedulable — no new pods will be placed on it
+Apply these changes? [y/n] n
+Aborted.
+```
+
+### 9 — Test op-level guardrail
+
+The op-level guardrail runs after planning and hard-blocks ops that should never execute. Pure Python, no LLM call.
 
 ```bash
 python3 - <<'EOF'
@@ -278,7 +326,7 @@ PASS  blocked: Refusing to resize 'batch-pool' to 0 nodes — that would evict a
 PASS  allowed: resize_node_pool({'name': 'batch-pool', 'count': 2})
 ```
 
-### 8 — Deploy an app and scale it
+### 10 — Deploy an app and scale it
 
 ```bash
 kubectl create deployment flask-app --image=nginx --replicas=2
@@ -287,15 +335,15 @@ kubectl get deployments flask-app   # 2/2 READY
 kube-mind "scale flask-app to 4 replicas"
 ```
 
-Expected:
+Expected — safe op, plain y/n, no risk warnings:
 ```
 → scale flask-app to 4 replicas
 Checking safety...
 Planning...
 
   Planned Operations
-  # │ Type    │ Action           │ Params
-  1 │ kubectl │ scale_deployment │ deployment=flask-app, replicas=4
+  # │ Type    │ Action           │ Params                          │ Risk
+  1 │ kubectl │ scale_deployment │ deployment=flask-app, replicas=4│ -
 
 Apply these changes? [y/n] y
 Executing...
@@ -307,7 +355,7 @@ Verify:
 kubectl get deployments flask-app   # 4/4 READY
 ```
 
-### 9 — Check history
+### 11 — Check history
 
 ```bash
 kube-mind history
@@ -315,7 +363,7 @@ kube-mind history
 
 Expected: table with both operations (node pool creation, deployment scale) with timestamps and `success` outcome.
 
-### 10 — Delete the cluster externally
+### 12 — Delete the cluster externally
 
 ```bash
 gcloud container clusters delete kubeagent-prod \
@@ -326,7 +374,7 @@ gcloud container clusters delete kubeagent-prod \
 
 Takes ~2 minutes.
 
-### 11 — Verify kube-mind detects the deletion
+### 13 — Verify kube-mind detects the deletion
 
 ```bash
 kube-mind status
@@ -347,23 +395,35 @@ After clearing, `kube-mind status` shows "No cluster found in state" — ready f
 
 ## Guardrails
 
-kube-mind uses [NeMo Guardrails](https://github.com/NVIDIA/NeMo-Guardrails) 0.22 for two layers of safety:
+kube-mind has three layers of safety between your intent and the cluster.
 
 ### Layer 1 — Intent check (before planning)
 
-Uses GPT-4o with a Kubernetes-specific safety prompt (`guardrails/config/prompts.yml`) to classify the user's intent. Blocked if the intent is:
+Uses [NeMo Guardrails](https://github.com/NVIDIA/NeMo-Guardrails) 0.22 with a Kubernetes-specific safety prompt (`guardrails/config/prompts.yml`) to classify the user's intent before the planner is called. Blocked if the intent is:
 
 - Destructive cluster-wide operations ("delete the cluster", "nuke everything", "wipe all nodes")
 - Completely off-topic ("write me a poem", "what's the weather")
 
-One extra GPT-4o API call per invocation. Zero LLM calls when blocked.
+Makes one GPT-4o API call per invocation. Zero LLM calls when blocked — fast fail.
 
 ### Layer 2 — Op check (after planning, before execution)
 
-Pure Python scan of the planned ops list. No LLM call. Blocked if:
+Pure Python scan of the planned ops list. No LLM call. Hard blocks:
 
-- `delete_node_pool` targets `default-pool` or `default` (the primary pool)
-- `resize_node_pool` sets count to 0 (would evict all workloads)
+- `delete_node_pool` targeting `default-pool` or `default` (the primary pool)
+- `resize_node_pool` setting count to 0 (would evict all workloads)
+
+### Layer 3 — Confirm gate (after planning, before execution)
+
+Pure Python risk classifier (`risk_check`) tags each planned op:
+
+| Tag | Ops | Confirmation required |
+|---|---|---|
+| `⛔ CONFIRM_BY_NAME` | `delete_node_pool`, `drain_node` | Must type the exact resource name |
+| `⚠  WARN` | `cordon_node` | Yellow warning shown, plain y/n |
+| safe | Everything else | Plain y/n |
+
+The distinction from Layer 2: guardrails hard-block ops that should **never** run. The confirm gate allows ops to proceed but forces explicit acknowledgment of the specific risk — similar to `terraform destroy` requiring you to type the workspace name.
 
 ---
 
@@ -405,6 +465,6 @@ All code and operation history are local — nothing is lost. Recreate the clust
 | 5 | gcloud tool node (node pool ops) | ✅ Done |
 | 6 | kubectl tool node (scale, cordon, drain) | ✅ Done |
 | 7 | NeMo Guardrails safety layer | ✅ Done |
-| 8 | Human confirm gate for risky ops | 🔜 Next |
-| 9 | Prometheus diagnose | 🔜 Upcoming |
+| 8 | Human confirm gate for risky ops | ✅ Done |
+| 9 | Prometheus diagnose | 🔜 Next |
 | 10 | Monitor daemon | 🔜 Upcoming |
