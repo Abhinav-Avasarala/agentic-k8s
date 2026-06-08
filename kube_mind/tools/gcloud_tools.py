@@ -4,6 +4,7 @@ import time
 from typing import Any
 
 from google.cloud import container_v1
+from google.api_core.exceptions import NotFound, PermissionDenied, GoogleAPIError
 
 
 def _client() -> container_v1.ClusterManagerClient:
@@ -41,6 +42,43 @@ def _wait_gone(client, project, zone, cluster, pool_name, interval=10):
         if _get_pool(client, project, zone, cluster, pool_name) is None:
             return
         time.sleep(interval)
+
+
+def get_live_cluster_status(project: str, zone: str, cluster: str) -> dict[str, Any] | None:
+    """Fetch live cluster state from the GKE API.
+
+    Returns a cluster dict compatible with state.json, or None if the cluster
+    does not exist (was deleted externally). Raises RuntimeError on auth/API errors.
+    """
+    client = _client()
+    path = _cluster_path(project, zone, cluster)
+    try:
+        c = client.get_cluster(name=path)
+        pools_resp = client.list_node_pools(parent=path)
+    except NotFound:
+        return None
+    except (PermissionDenied, GoogleAPIError) as e:
+        raise RuntimeError(f"GKE API error: {e}") from e
+
+    node_pools = []
+    for p in pools_resp.node_pools:
+        pool_entry: dict[str, Any] = {
+            "name": p.name,
+            "machine": p.config.machine_type,
+            "count": p.initial_node_count,
+            "status": container_v1.NodePool.Status(p.status).name,
+        }
+        if p.config.accelerators:
+            pool_entry["gpu"] = p.config.accelerators[0].accelerator_type
+        node_pools.append(pool_entry)
+
+    return {
+        "name": c.name,
+        "zone": zone,
+        "project": project,
+        "status": container_v1.Cluster.Status(c.status).name,
+        "node_pools": node_pools,
+    }
 
 
 def create_node_pool(project: str, zone: str, cluster: str, params: dict[str, Any]) -> None:

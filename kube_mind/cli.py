@@ -2,11 +2,14 @@ import sys
 import typer
 from typing import Optional
 from rich.console import Console
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from kube_mind.state import StateManager
 from kube_mind import output
 
-_SUBCOMMANDS = {"diff", "status", "history", "undo", "monitor"}
+_SUBCOMMANDS = {"diff", "status", "history", "undo", "monitor", "init"}
 
 app = typer.Typer(
     name="kube-mind",
@@ -19,11 +22,26 @@ state = StateManager()
 
 def _run_agent(intent: str, dry_run: bool = False) -> None:
     from kube_mind.agent.graph import plan, execute
+    from kube_mind.guardrails.guard import check_intent, check_ops, GuardrailsError
 
     console.print(f"[bold cyan]→[/bold cyan] [italic]{intent}[/italic]")
 
+    with console.status("[dim]Checking safety...[/dim]"):
+        try:
+            check_intent(intent)
+        except GuardrailsError as e:
+            console.print(f"[red bold]Blocked:[/red bold] {e}")
+            return
+
     with console.status("[dim]Planning...[/dim]"):
         ops = plan(intent, state._data)
+
+    try:
+        check_ops(ops)
+    except GuardrailsError as e:
+        output.print_plan(ops)
+        console.print(f"[red bold]Blocked:[/red bold] {e}")
+        return
 
     output.print_plan(ops)
 
@@ -80,10 +98,83 @@ def diff(
 
 
 @app.command()
-def status():
-    """Print a summary of the current cluster: node pools, workloads, resource usage."""
+def init(
+    project: str = typer.Option(..., "--project", "-p", help="GCP project ID"),
+    zone: str = typer.Option(..., "--zone", "-z", help="GCP zone, e.g. us-east1-b"),
+    cluster: str = typer.Option(..., "--cluster", "-c", help="GKE cluster name"),
+):
+    """Connect kube-mind to an existing GKE cluster and seed local state."""
+    from kube_mind.tools.gcloud_tools import get_live_cluster_status
+
+    with console.status(f"[dim]Looking up cluster '{cluster}' in {project}/{zone}...[/dim]"):
+        try:
+            live = get_live_cluster_status(project, zone, cluster)
+        except RuntimeError as e:
+            console.print(f"[red]GKE API error:[/red] {e}")
+            raise typer.Exit(1)
+
+    if live is None:
+        console.print(
+            f"[red]Cluster '{cluster}' not found in project '{project}' / zone '{zone}'.[/red]"
+        )
+        console.print("[dim]Double-check the name, project, and zone.[/dim]")
+        raise typer.Exit(1)
+
     state.load()
-    output.print_status(state.cluster, state.workloads)
+    state._data["cluster"] = live
+    state.save()
+
+    console.print(f"[green]Initialized.[/green] Synced cluster [bold]{cluster}[/bold] to {state.path}")
+    output.print_status(live, state.workloads)
+
+
+@app.command()
+def status():
+    """Print live cluster status from GKE, then sync local state.json."""
+    state.load()
+    cluster = state.cluster
+
+    if not cluster.get("name"):
+        output.print_status(cluster, state.workloads)
+        return
+
+    with console.status("[dim]Fetching live cluster status from GKE...[/dim]"):
+        try:
+            from kube_mind.tools.gcloud_tools import get_live_cluster_status
+            live = get_live_cluster_status(
+                cluster["project"], cluster["zone"], cluster["name"]
+            )
+        except RuntimeError as e:
+            console.print(f"[yellow]Warning:[/yellow] {e}")
+            console.print("[dim]Showing cached local state instead.[/dim]")
+            output.print_status(cluster, state.workloads)
+            return
+
+    if live is None:
+        console.print(
+            f"[red bold]Cluster '{cluster['name']}' not found in GCP.[/red bold]"
+        )
+        console.print(
+            "[dim]It was likely deleted outside kube-mind. "
+            "Local state.json still shows the old info.[/dim]"
+        )
+        if output.confirm("Clear local cluster state?"):
+            state._data["cluster"] = {
+                "name": None,
+                "zone": cluster.get("zone"),
+                "project": cluster.get("project"),
+                "node_pools": [],
+            }
+            state.save()
+            console.print("[dim]Local state cleared.[/dim]")
+        return
+
+    # Sync live node pool data back into state.json
+    state._data["cluster"]["node_pools"] = live["node_pools"]
+    state._data["cluster"]["status"] = live.get("status")
+    state.save()
+
+    output.print_status(live, state.workloads)
 
 
 @app.command()

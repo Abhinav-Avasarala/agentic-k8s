@@ -52,17 +52,24 @@ def print_status(cluster: dict[str, Any], workloads: list[dict[str, Any]]) -> No
         console.print(Panel("[yellow]No cluster found in state. Run kube-mind with an intent to provision one.[/yellow]", title="Status"))
         return
 
-    table = Table(title=f"Cluster: {cluster['name']} | {cluster.get('zone', '?')}", box=box.SIMPLE_HEAVY)
+    cluster_status = cluster.get("status", "")
+    status_label = f"  [{cluster_status}]" if cluster_status else ""
+    title = f"Cluster: {cluster['name']} | {cluster.get('zone', '?')}{status_label}"
+
+    table = Table(title=title, box=box.SIMPLE_HEAVY)
     table.add_column("Node Pool", style="cyan")
     table.add_column("Machine", style="white")
     table.add_column("Count", justify="right")
+    table.add_column("Status", style="green")
     table.add_column("GPU", style="yellow")
 
     for pool in cluster.get("node_pools", []):
+        pool_status = pool.get("status", "-")
         table.add_row(
             pool.get("name", ""),
             pool.get("machine", ""),
             str(pool.get("count", "")),
+            pool_status,
             pool.get("gpu", "-"),
         )
 

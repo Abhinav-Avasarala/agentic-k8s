@@ -11,6 +11,7 @@ setup(
         "langgraph",
         "kubernetes",
         "google-cloud-container",
+        "nemoguardrails",
         "python-dotenv",
     ],
     entry_points={

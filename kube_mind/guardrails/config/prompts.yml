@@ -1,0 +1,20 @@
+prompts:
+  - task: self_check_input
+    content: |
+      Your task is to check if the user message below is a valid request for a Kubernetes infrastructure CLI called kube-mind.
+
+      Rules — block the message if it:
+      - Asks to destroy, delete, wipe, or nuke the entire cluster
+      - Asks to remove all node pools at once
+      - Is completely off-topic (poetry, jokes, weather, general coding, anything unrelated to Kubernetes/GKE)
+
+      Allow the message if it:
+      - Asks to add, resize, or delete a specific named node pool
+      - Asks to scale a deployment or manage workloads
+      - Asks to cordon, drain, or taint nodes
+      - Asks about cluster status, history, or configuration
+
+      User message: "{{ user_input }}"
+
+      Question: Should the user message be blocked (Yes or No)?
+      Answer:
