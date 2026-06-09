@@ -16,6 +16,7 @@ class AgentState(TypedDict):
     cluster_state: dict[str, Any]
     ops: list[dict[str, Any]]
     dry_run: bool
+    verify_results: list  # list of (op, result_dict) pairs collected during execution
 
 
 def _parse_ops(text: str) -> list[dict[str, Any]]:
@@ -67,6 +68,18 @@ def executor_node(state: AgentState) -> AgentState:
     cluster = state["cluster_state"]["cluster"]
     project, zone, name = cluster["project"], cluster["zone"], cluster["name"]
 
+    from kube_mind.tools.prometheus_tools import (
+        check_nodes_ready, check_pod_scheduled, check_deployment_ready,
+        run_prometheus_query,
+    )
+
+    _verify = {
+        "check_nodes_ready": check_nodes_ready,
+        "check_pod_scheduled": check_pod_scheduled,
+        "check_deployment_ready": check_deployment_ready,
+        "prometheus_query": run_prometheus_query,
+    }
+
     for op in state["ops"]:
         if op["type"] == "gcloud":
             fn = _gcloud.get(op["action"])
@@ -76,7 +89,11 @@ def executor_node(state: AgentState) -> AgentState:
             fn = _kubectl.get(op["action"])
             if fn:
                 fn(op["params"])
-        # verify ops handled in Step 9
+        elif op["type"] == "verify":
+            fn = _verify.get(op["action"])
+            if fn:
+                result = fn(op.get("params", {}))
+                state["verify_results"].append((op, result))
 
     return state
 
@@ -108,6 +125,10 @@ def plan(intent: str, cluster_state: dict[str, Any]) -> list[dict[str, Any]]:
     return result["ops"]
 
 
-def execute(ops: list[dict[str, Any]], cluster_state: dict[str, Any]) -> None:
-    """Execute a pre-planned list of ops against the cluster."""
-    executor_node({"ops": ops, "cluster_state": cluster_state, "dry_run": False, "intent": ""})
+def execute(ops: list[dict[str, Any]], cluster_state: dict[str, Any]) -> list:
+    """Execute a pre-planned list of ops. Returns list of (op, result) pairs from verify steps."""
+    result = executor_node({
+        "ops": ops, "cluster_state": cluster_state,
+        "dry_run": False, "intent": "", "verify_results": [],
+    })
+    return result.get("verify_results", [])

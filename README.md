@@ -1,11 +1,14 @@
 # kube-mind
 
-Natural language Kubernetes infrastructure CLI. Type plain English to provision, configure, and modify a GKE cluster — no `kubectl` commands or Terraform required.
+Natural language Kubernetes infrastructure CLI. Type plain English to provision, configure, monitor, and modify a GKE cluster — no `kubectl` commands or Terraform required.
 
 ```bash
 kube-mind init --project my-project --zone us-east1-b --cluster kubeagent-prod
 kube-mind "add a GPU node for ML inference"
 kube-mind "scale flask-app to 4 replicas"
+kube-mind "is everything alright"
+kube-mind "are any pods crash-looping?"
+kube-mind "how much CPU and memory is flask-app using?"
 kube-mind status
 kube-mind history
 ```
@@ -14,7 +17,7 @@ kube-mind history
 
 ## How it works
 
-You describe what you want. The agent checks safety, plans the minimum set of operations needed, and executes them.
+You describe what you want. The agent checks safety, plans the minimum set of operations needed, executes them, and verifies the result.
 
 ```
 Your intent (plain English)
@@ -29,12 +32,15 @@ Your intent (plain English)
         ↓ (if safe)
   Risk classifier  ←  tags each op: ⛔ CONFIRM_BY_NAME / ⚠ WARN / safe
         ↓
-  Confirm gate  ←  type resource name for ⛔, plain y/n for ⚠ and safe ops
+  Confirm gate  ←  skipped for read-only verify ops; y/n or name-typed for mutations
         ↓ (confirmed)
-  gcloud Python SDK  →  GKE node pool operations
-  K8s Python SDK     →  deployment / node operations
+  gcloud Python SDK   →  GKE node pool operations
+  K8s Python SDK      →  deployment / node operations
+  Prometheus HTTP     →  cluster health queries (CPU, memory, pod health, crash-loops)
         ↓
-  state.json updated
+  Verify steps run automatically after provisioning
+        ↓
+  state.json updated  +  health report printed
 ```
 
 ---
@@ -48,7 +54,9 @@ Your intent (plain English)
 | Agent loop | LangGraph 1.x | Stateful planner → executor graph |
 | LLM | GPT-4o (OpenAI) | Translates vague intent to typed ops |
 | GKE control | google-cloud-container SDK | Create/delete/resize node pools |
-| K8s control | kubernetes Python SDK | Scale deployments, cordon/drain nodes |
+| K8s control | kubernetes Python SDK | Scale deployments, cordon/drain nodes, verify pod/node state |
+| Monitoring | kube-prometheus-stack (Helm) | Prometheus + node-exporter + kube-state-metrics on the cluster |
+| Diagnostics | Prometheus HTTP API + PromQL | CPU, memory, pod health, crash-loop, per-deployment resource queries |
 | State | `~/.kube-mind/state.json` | Persists cluster state across CLI calls |
 | Infra | GKE Standard (GCP) | The actual cluster |
 
@@ -60,10 +68,10 @@ Your intent (plain English)
 kube_mind/
 ├── cli.py            # Typer CLI — entry point, all commands
 ├── state.py          # StateManager — reads/writes ~/.kube-mind/state.json
-├── output.py         # Rich terminal output helpers
+├── output.py         # Rich terminal output helpers + health report renderer
 ├── agent/
-│   ├── graph.py      # LangGraph graph: planner → executor
-│   └── prompts.py    # System prompt for GPT-4o
+│   ├── graph.py      # LangGraph graph: planner → executor, collects verify results
+│   └── prompts.py    # System prompt for GPT-4o including PromQL query templates
 ├── guardrails/
 │   ├── guard.py      # check_intent (NeMo), check_ops, risk_check, RiskLevel
 │   └── config/
@@ -71,8 +79,11 @@ kube_mind/
 │       ├── prompts.yml   # Custom Kubernetes safety prompt for self_check_input
 │       └── rails.co      # Colang — bot refusal message
 └── tools/
-    ├── gcloud_tools.py   # create/delete/resize node pools + live status via GKE API
-    └── kubectl_tools.py  # scale, cordon, drain, patch via K8s API
+    ├── gcloud_tools.py      # create/delete/resize node pools + live status via GKE API
+    ├── kubectl_tools.py     # scale, cordon, drain, patch via K8s API
+    ├── prometheus_tools.py  # verify ops: check_nodes_ready, check_deployment_ready,
+    │                        #   check_pod_scheduled, run_prometheus_query
+    └── monitoring_tools.py  # install_prometheus (Helm), port-forward lifecycle
 ```
 
 ---
@@ -81,8 +92,9 @@ kube_mind/
 
 ### 1. Prerequisites
 
-- Python 3.10+
+- Python 3.10+ (3.11+ recommended)
 - [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) installed and configured
+- [Helm](https://helm.sh/docs/intro/install/) (`brew install helm` on macOS)
 - A GCP project with billing enabled
 - An OpenAI API key
 
@@ -119,20 +131,143 @@ gcloud auth application-default login
 
 | Command | What it does |
 |---|---|
-| `kube-mind init --project P --zone Z --cluster C` | Connect kube-mind to an existing GKE cluster, seed local state |
-| `kube-mind "<intent>"` | Safety check → plan → confirm → execute |
+| `kube-mind init --project P --zone Z --cluster C` | Connect to a GKE cluster, seed state, install Prometheus |
+| `kube-mind init ... --no-monitoring` | Same but skip Prometheus install |
+| `kube-mind "<intent>"` | Safety check → plan → confirm → execute → verify |
 | `kube-mind "<intent>" --dry-run` | Safety check → plan only, no changes |
 | `kube-mind status` | Fetch live cluster state from GKE, sync state.json |
 | `kube-mind history` | Show log of every past operation with timestamps and outcomes |
 | `kube-mind diff "<intent>"` | Show adds/updates/deletes without executing |
 | `kube-mind undo` | Roll back the last operation |
-| `kube-mind monitor` | Poll Prometheus for anomalies (not yet built) |
+| `kube-mind monitor` | Poll Prometheus for anomalies (Step 10 — not yet built) |
+
+---
+
+## Diagnostic queries
+
+kube-mind understands plain English health and diagnostic questions. These run read-only Prometheus queries — no confirmation prompt, no cluster changes.
+
+| What you type | What it checks |
+|---|---|
+| `"is everything alright"` | Cluster-wide CPU %, memory %, pod phase counts |
+| `"what's wrong"` / `"something feels slow"` | Same three health metrics |
+| `"are any pods crash-looping?"` | Count of pods in CrashLoopBackOff across all non-system namespaces |
+| `"how much CPU and memory is flask-app using?"` | Summed CPU (millicores) and memory (MB) for a specific deployment |
+| `"which node is under the most load?"` | Per-node CPU % — surfaces the busiest node |
+| `"any pod restarts in the last hour?"` | Total restart events across non-system pods |
+
+Example output for `kube-mind "is everything alright"`:
+
+```
+  Cluster Health
+
+  Metric          Value         Status
+  ──────────────────────────────────────────
+  CPU usage       10.2%         ✓  OK
+  Memory usage    27.2%         ✓  OK
+  Pod health      default   4 Running   ✓  OK
+                  monitoring  7 Running
+```
+
+Thresholds: CPU warns at 70%, critical at 85%. Memory warns at 80%, critical at 90%. Any crash-looping or failed pods → CRITICAL.
+
+---
+
+## Monitoring setup
+
+`kube-mind init` installs Prometheus automatically using Helm (`kube-prometheus-stack`). This gives you:
+
+- **Prometheus** — scrapes and stores cluster metrics every 15 seconds
+- **node-exporter** — per-node CPU, memory, disk, network metrics (runs on every node as a DaemonSet)
+- **kube-state-metrics** — Kubernetes object metrics (pod phases, deployment health, restart counts)
+
+A background `kubectl port-forward` is started automatically and its PID saved to `~/.kube-mind/prometheus_pf.pid`. kube-mind restarts it if it dies between CLI calls.
+
+Prometheus runs inside the cluster — it is destroyed automatically when you delete the cluster. When you recreate the cluster and run `kube-mind init` again, it is reinstalled fresh.
+
+```bash
+# Skip monitoring install (e.g. already installed, or want to set it up manually)
+kube-mind init --project P --zone Z --cluster C --no-monitoring
+
+# Kill the local port-forward manually if needed
+kill $(cat ~/.kube-mind/prometheus_pf.pid) 2>/dev/null; true
+
+# Point kube-mind at an external Prometheus instance
+echo "PROMETHEUS_URL=http://your-prometheus:9090" >> .env
+```
+
+---
+
+## Guardrails
+
+kube-mind has three layers of safety between your intent and the cluster.
+
+### Layer 1 — Intent check (before planning)
+
+Uses [NeMo Guardrails](https://github.com/NVIDIA/NeMo-Guardrails) 0.22 with a Kubernetes-specific safety prompt (`guardrails/config/prompts.yml`) to classify the user's intent before the planner is called. Blocked if the intent is:
+
+- Destructive cluster-wide operations ("delete the cluster", "nuke everything", "wipe all nodes")
+- Completely off-topic ("write me a poem", "what's the weather")
+
+Allowed through: operational intents (add/resize/delete named pools, scale deployments, cordon/drain nodes) and diagnostic intents (health checks, performance questions, crash-loop queries).
+
+Makes one GPT-4o API call per invocation. Zero LLM calls when blocked — fast fail.
+
+### Layer 2 — Op check (after planning, before execution)
+
+Pure Python scan of the planned ops list. No LLM call. Hard blocks:
+
+- `delete_node_pool` targeting `default-pool` or `default` (the primary pool)
+- `resize_node_pool` setting count to 0 (would evict all workloads)
+
+### Layer 3 — Confirm gate (after planning, before execution)
+
+Pure Python risk classifier (`risk_check`) tags each planned op:
+
+| Tag | Ops | Confirmation required |
+|---|---|---|
+| `⛔ CONFIRM_BY_NAME` | `delete_node_pool`, `drain_node` | Must type the exact resource name |
+| `⚠  WARN` | `cordon_node` | Yellow warning shown, plain y/n |
+| safe | Everything else | Plain y/n |
+| skipped | All-verify plans (health checks) | No prompt — queries are read-only |
+
+The distinction from Layer 2: guardrails hard-block ops that should **never** run. The confirm gate allows ops to proceed but forces explicit acknowledgment of the specific risk — similar to `terraform destroy` requiring you to type the workspace name.
+
+---
+
+## Verify steps
+
+After every provisioning or scaling operation the planner automatically appends a verify step. These run using the Kubernetes API (no Prometheus needed) and print a result before marking the operation complete.
+
+| Verify action | What it checks |
+|---|---|
+| `check_nodes_ready` | All nodes in a named pool have `Ready=True` |
+| `check_deployment_ready` | `ready_replicas == spec.replicas` for a deployment |
+| `check_pod_scheduled` | All pods for a deployment have been assigned to a node |
+| `prometheus_query` | Runs any PromQL query and returns the result as a formatted table |
+
+If a verify step fails the operation is recorded as `"failed"` in history and the error is printed in red — the cluster change already happened but the expected post-condition was not met.
+
+---
+
+## Cluster lifecycle
+
+kube-mind manages clusters, it does not create or destroy them. That boundary is intentional — cluster creation involves VPC settings, auth plugins, billing configuration, and add-ons that belong in `gcloud` or Terraform.
+
+| Operation | Tool |
+|---|---|
+| Create cluster | `gcloud container clusters create` |
+| Sync to kube-mind + install monitoring | `kube-mind init` |
+| Day-to-day management | `kube-mind "<intent>"` |
+| Health diagnostics | `kube-mind "is everything alright"` |
+| Delete cluster | `gcloud container clusters delete` |
+| Detect deletion | `kube-mind status` (prompts to clear local state) |
 
 ---
 
 ## End-to-end test
 
-This test covers the full lifecycle: cluster creation → state sync → guardrails → real GKE/kubectl ops → external deletion → state sync.
+Full lifecycle: cluster creation → Prometheus install → guardrails → real GKE/kubectl ops → verify steps → Prometheus diagnostics → external deletion → state sync.
 
 Replace `YOUR_PROJECT_ID` with your GCP project ID throughout.
 
@@ -167,7 +302,7 @@ gcloud container clusters get-credentials kubeagent-prod \
 kubectl get nodes   # 3 nodes, status Ready
 ```
 
-### 3 — Seed local state
+### 3 — Init kube-mind (installs Prometheus automatically)
 
 ```bash
 kube-mind init \
@@ -180,39 +315,40 @@ Expected:
 ```
 Initialized. Synced cluster kubeagent-prod to ~/.kube-mind/state.json
 
- Cluster: kubeagent-prod | us-east1-b  [RUNNING]
+  Cluster: kubeagent-prod | us-east1-b  [RUNNING]
   Node Pool      Machine     Count   Status
   default-pool   e2-medium       3   RUNNING
+
+Installing Prometheus monitoring stack (this takes ~2 min)...
+Prometheus installed.
+Starting port-forward to Prometheus...
+Prometheus ready at http://localhost:9090
 ```
 
-### 4 — Test guardrails: dangerous intents are blocked
+Verify Prometheus is up:
+```bash
+curl -s http://localhost:9090/-/ready
+# Prometheus Server is Ready.
+```
+
+### 4 — Test guardrails: dangerous intents blocked
 
 ```bash
 kube-mind "delete the cluster"
-```
-Expected — NeMo blocks before the planner is ever called:
-```
-→ delete the cluster
-Checking safety...
-Blocked: Blocked by safety guardrails: the request is either dangerous or unrelated to Kubernetes infrastructure.
-```
+# → Blocked: Blocked by safety guardrails...
 
-```bash
 kube-mind "write me a poem about Kubernetes"
+# → Blocked: Blocked by safety guardrails...
 ```
-Expected: same block message.
 
 ### 5 — Test guardrails: safe intents pass through
 
 ```bash
 kube-mind "add a GPU node for ML inference" --dry-run
 ```
-Expected — passes safety check, planner runs, no real changes:
-```
-→ add a GPU node for ML inference
-Checking safety...
-Planning...
 
+Expected — passes safety check, planner runs, verify step shown, no real changes:
+```
   Planned Operations
   # │ Type   │ Action           │ Params
   1 │ gcloud │ create_node_pool │ name=gpu-pool, machine=n1-standard-4, gpu=T4, count=1
@@ -221,84 +357,81 @@ Planning...
 --dry-run: no changes applied.
 ```
 
-### 6 — Create a real node pool
+### 6 — Create a real node pool (tests verify step)
 
 ```bash
 kube-mind "add a small spot node pool with 1 node for batch jobs"
+# confirm: y
 ```
 
-Expected — confirm prompt, then GKE API call:
+Expected — GKE API call runs, then verify step checks the pool is ready:
 ```
-→ add a small spot node pool with 1 node for batch jobs
-Checking safety...
-Planning...
-
-  Planned Operations
-  # │ Type   │ Action           │ Params
-  1 │ gcloud │ create_node_pool │ name=batch-pool, machine=e2-small, count=1, preemptible=True
-
-Apply these changes? [y/n] y
 Executing...
+  ✓  Pool 'batch-pool': 1/1 nodes ready
 Done.
 ```
 
-Verify:
 ```bash
 kube-mind status
-# Shows both default-pool and batch-pool as RUNNING
+# Shows default-pool (3 nodes) + batch-pool (1 node)
 ```
 
-### 7 — Test confirm gate: CONFIRM_BY_NAME path
+### 7 — Deploy an app and scale it (tests deployment verify step)
 
-`batch-pool` now exists in state.json. Ask kube-mind to delete it — the planner generates a `delete_node_pool` op which is tagged `⛔ HIGH`. Type the wrong name to abort safely, no GKE call is made.
+```bash
+kubectl create deployment flask-app --image=nginx --replicas=2
+kubectl rollout status deployment/flask-app
+
+kube-mind "scale flask-app to 4 replicas"
+# confirm: y
+```
+
+Expected:
+```
+Executing...
+  ✓  Deployment 'flask-app': 4/4 replicas ready
+Done.
+```
+
+### 8 — Health check via Prometheus
+
+```bash
+kube-mind "is everything alright"
+```
+
+Expected — no confirmation prompt (read-only), prints health report:
+```
+  Cluster Health
+
+  Metric          Value         Status
+  ──────────────────────────────────────────
+  CPU usage       10.2%         ✓  OK
+  Memory usage    27.2%         ✓  OK
+  Pod health      default   4 Running   ✓  OK
+                  monitoring  7 Running
+```
+
+### 9 — Specific diagnostic queries
+
+```bash
+kube-mind "are any pods crash-looping?"
+# → Crash-looping pods   0   ✓  OK
+
+kube-mind "how much CPU and memory is flask-app using?"
+# → flask-app CPU      12m     ✓  OK
+# → flask-app memory   8.3 MB  ✓  OK
+```
+
+### 10 — Test confirm gate: CONFIRM_BY_NAME path
 
 ```bash
 kube-mind "remove the batch-pool node pool"
+# Plan shows ⛔ HIGH risk, prompts for name
+# Type wrong-name → aborted safely (no GKE call made)
+# Re-run, type batch-pool → y → deleted
 ```
 
-Expected — plan shows `⛔ HIGH`, then name prompt:
-```
-→ remove the batch-pool node pool
-Checking safety...
-Planning...
-
-  Planned Operations
-  # │ Type   │ Action           │ Params          │ Risk
-  1 │ gcloud │ delete_node_pool │ name=batch-pool │ ⛔ HIGH
-  ⛔ deletes a node pool and evicts all workloads running on it
-
-This plan contains high-risk operations. Type the resource name to confirm each one.
-
-  ⛔ delete_node_pool — deletes a node pool and evicts all workloads running on it
-     Type batch-pool to confirm: wrong-name
-Confirmation did not match — aborted.
-```
-
-### 8 — Test confirm gate: WARN path
-
-```bash
-kube-mind "cordon gke-node-1"
-```
-
-Expected — plan shows `⚠ WARN`, then plain y/n:
-```
-→ cordon gke-node-1
-Checking safety...
-Planning...
-
-  Planned Operations
-  # │ Type    │ Action      │ Params           │ Risk
-  1 │ kubectl │ cordon_node │ node=gke-node-1  │ ⚠  WARN
-  ⚠ marks the node unschedulable — no new pods will be placed on it
-
-⚠  Warning: marks the node unschedulable — no new pods will be placed on it
-Apply these changes? [y/n] n
-Aborted.
-```
-
-### 9 — Test op-level guardrail
-
-The op-level guardrail runs after planning and hard-blocks ops that should never execute. Pure Python, no LLM call.
+### 11 — Test op-level guardrail
 
 ```bash
 python3 - <<'EOF'
@@ -326,118 +459,30 @@ PASS  blocked: Refusing to resize 'batch-pool' to 0 nodes — that would evict a
 PASS  allowed: resize_node_pool({'name': 'batch-pool', 'count': 2})
 ```
 
-### 10 — Deploy an app and scale it
-
-```bash
-kubectl create deployment flask-app --image=nginx --replicas=2
-kubectl get deployments flask-app   # 2/2 READY
-
-kube-mind "scale flask-app to 4 replicas"
-```
-
-Expected — safe op, plain y/n, no risk warnings:
-```
-→ scale flask-app to 4 replicas
-Checking safety...
-Planning...
-
-  Planned Operations
-  # │ Type    │ Action           │ Params                          │ Risk
-  1 │ kubectl │ scale_deployment │ deployment=flask-app, replicas=4│ -
-
-Apply these changes? [y/n] y
-Executing...
-Done.
-```
-
-Verify:
-```bash
-kubectl get deployments flask-app   # 4/4 READY
-```
-
-### 11 — Check history
+### 12 — Check history
 
 ```bash
 kube-mind history
 ```
 
-Expected: table with both operations (node pool creation, deployment scale) with timestamps and `success` outcome.
+Expected: table with all operations (node pool create, deployment scale, node pool delete) with timestamps and `success` outcome.
 
-### 12 — Delete the cluster externally
+### 13 — Shut down
 
 ```bash
 gcloud container clusters delete kubeagent-prod \
   --zone=us-east1-b \
   --project=YOUR_PROJECT_ID \
   --quiet
-```
 
-Takes ~2 minutes.
-
-### 13 — Verify kube-mind detects the deletion
-
-```bash
+# kube-mind detects the deletion
 kube-mind status
+# → "Cluster 'kubeagent-prod' not found in GCP."
+# → Clear local cluster state? [y/n] y
+
+# Kill the local port-forward (Prometheus pods are already gone with the cluster)
+kill $(cat ~/.kube-mind/prometheus_pf.pid) 2>/dev/null; true
 ```
-
-Expected:
-```
-Fetching live cluster status from GKE...
-Cluster 'kubeagent-prod' not found in GCP.
-It was likely deleted outside kube-mind. Local state.json still shows the old info.
-Clear local cluster state? [y/n] y
-Local state cleared.
-```
-
-After clearing, `kube-mind status` shows "No cluster found in state" — ready for the next `kube-mind init`.
-
----
-
-## Guardrails
-
-kube-mind has three layers of safety between your intent and the cluster.
-
-### Layer 1 — Intent check (before planning)
-
-Uses [NeMo Guardrails](https://github.com/NVIDIA/NeMo-Guardrails) 0.22 with a Kubernetes-specific safety prompt (`guardrails/config/prompts.yml`) to classify the user's intent before the planner is called. Blocked if the intent is:
-
-- Destructive cluster-wide operations ("delete the cluster", "nuke everything", "wipe all nodes")
-- Completely off-topic ("write me a poem", "what's the weather")
-
-Makes one GPT-4o API call per invocation. Zero LLM calls when blocked — fast fail.
-
-### Layer 2 — Op check (after planning, before execution)
-
-Pure Python scan of the planned ops list. No LLM call. Hard blocks:
-
-- `delete_node_pool` targeting `default-pool` or `default` (the primary pool)
-- `resize_node_pool` setting count to 0 (would evict all workloads)
-
-### Layer 3 — Confirm gate (after planning, before execution)
-
-Pure Python risk classifier (`risk_check`) tags each planned op:
-
-| Tag | Ops | Confirmation required |
-|---|---|---|
-| `⛔ CONFIRM_BY_NAME` | `delete_node_pool`, `drain_node` | Must type the exact resource name |
-| `⚠  WARN` | `cordon_node` | Yellow warning shown, plain y/n |
-| safe | Everything else | Plain y/n |
-
-The distinction from Layer 2: guardrails hard-block ops that should **never** run. The confirm gate allows ops to proceed but forces explicit acknowledgment of the specific risk — similar to `terraform destroy` requiring you to type the workspace name.
-
----
-
-## Cluster lifecycle
-
-kube-mind manages clusters, it does not create or destroy them. That boundary is intentional — cluster creation involves VPC settings, auth plugins, billing configuration, and add-ons that belong in `gcloud` or Terraform.
-
-| Operation | Tool |
-|---|---|
-| Create cluster | `gcloud container clusters create` |
-| Sync to kube-mind | `kube-mind init` |
-| Day-to-day management | `kube-mind "<intent>"` |
-| Delete cluster | `gcloud container clusters delete` |
-| Detect deletion | `kube-mind status` (prompts to clear local state) |
 
 ---
 
@@ -466,5 +511,5 @@ All code and operation history are local — nothing is lost. Recreate the clust
 | 6 | kubectl tool node (scale, cordon, drain) | ✅ Done |
 | 7 | NeMo Guardrails safety layer | ✅ Done |
 | 8 | Human confirm gate for risky ops | ✅ Done |
-| 9 | Prometheus diagnose | 🔜 Next |
-| 10 | Monitor daemon | 🔜 Upcoming |
+| 9 | Prometheus diagnose + verify steps | ✅ Done |
+| 10 | Monitor daemon | 🔜 Next |

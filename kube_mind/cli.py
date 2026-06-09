@@ -23,6 +23,7 @@ state = StateManager()
 def _run_agent(intent: str, dry_run: bool = False) -> None:
     from kube_mind.agent.graph import plan, execute
     from kube_mind.guardrails.guard import check_intent, check_ops, risk_check, RiskLevel, GuardrailsError
+    from kube_mind.tools.prometheus_tools import VerifyError
 
     console.print(f"[bold cyan]→[/bold cyan] [italic]{intent}[/italic]")
 
@@ -54,38 +55,51 @@ def _run_agent(intent: str, dry_run: bool = False) -> None:
         console.print("[dim]--dry-run: no changes applied.[/dim]")
         return
 
-    # Risk-aware confirmation gate
-    high_risk = [(op, msg) for op, level, msg in risks if level == RiskLevel.CONFIRM_BY_NAME]
-    has_warn   = any(level == RiskLevel.WARN for _, level, _ in risks)
+    # Pure verify ops (health checks, diagnostics) need no confirmation — they are read-only.
+    all_verify = all(op.get("type") == "verify" for op in ops)
 
-    if high_risk:
-        console.print()
-        console.print("[red bold]This plan contains high-risk operations.[/red bold] Type the resource name to confirm each one.")
-        for op, msg in high_risk:
-            resource = op.get("params", {}).get("name") or op.get("params", {}).get("node", "")
-            console.print(f"\n  [red]⛔ {op['action']}[/red] — {msg}")
-            typed = console.input(f"     Type [bold]{resource}[/bold] to confirm: ").strip()
-            if typed != resource:
-                console.print("[dim]Confirmation did not match — aborted.[/dim]")
+    if not all_verify:
+        # Risk-aware confirmation gate for ops that mutate the cluster
+        high_risk = [(op, msg) for op, level, msg in risks if level == RiskLevel.CONFIRM_BY_NAME]
+        has_warn   = any(level == RiskLevel.WARN for _, level, _ in risks)
+
+        if high_risk:
+            console.print()
+            console.print("[red bold]This plan contains high-risk operations.[/red bold] Type the resource name to confirm each one.")
+            for op, msg in high_risk:
+                resource = op.get("params", {}).get("name") or op.get("params", {}).get("node", "")
+                console.print(f"\n  [red]⛔ {op['action']}[/red] — {msg}")
+                typed = console.input(f"     Type [bold]{resource}[/bold] to confirm: ").strip()
+                if typed != resource:
+                    console.print("[dim]Confirmation did not match — aborted.[/dim]")
+                    return
+            if not output.confirm("All risks confirmed. Apply these changes?"):
+                console.print("[dim]Aborted.[/dim]")
                 return
-        if not output.confirm("All risks confirmed. Apply these changes?"):
-            console.print("[dim]Aborted.[/dim]")
-            return
-    elif has_warn:
-        console.print()
-        for _, level, msg in risks:
-            if level == RiskLevel.WARN:
-                console.print(f"[yellow]⚠  Warning:[/yellow] {msg}")
-        if not output.confirm("Apply these changes?"):
-            console.print("[dim]Aborted.[/dim]")
-            return
-    else:
-        if not output.confirm("Apply these changes?"):
-            console.print("[dim]Aborted.[/dim]")
-            return
+        elif has_warn:
+            console.print()
+            for _, level, msg in risks:
+                if level == RiskLevel.WARN:
+                    console.print(f"[yellow]⚠  Warning:[/yellow] {msg}")
+            if not output.confirm("Apply these changes?"):
+                console.print("[dim]Aborted.[/dim]")
+                return
+        else:
+            if not output.confirm("Apply these changes?"):
+                console.print("[dim]Aborted.[/dim]")
+                return
 
-    with console.status("[dim]Executing...[/dim]"):
-        execute(ops, state._data)
+    console.print("[dim]Executing...[/dim]")
+    try:
+        verify_results = execute(ops, state._data)
+    except VerifyError as e:
+        state.record(intent, ops, "failed")
+        state.save()
+        console.print(f"[red bold]Verify failed:[/red bold] {e}")
+        return
+
+    if verify_results:
+        output.print_verify_results(verify_results)
 
     state.record(intent, ops, "success")
     state.save()
@@ -124,11 +138,39 @@ def diff(
     console.print("[dim]Run without 'diff' to apply.[/dim]")
 
 
+def _setup_monitoring() -> None:
+    from kube_mind.tools.monitoring_tools import install_prometheus, start_port_forward, MonitoringError
+
+    console.print()
+    with console.status("[dim]Installing Prometheus monitoring stack (this takes ~2 min)...[/dim]"):
+        try:
+            installed = install_prometheus()
+        except MonitoringError as e:
+            console.print(f"[yellow]Monitoring setup skipped:[/yellow] {e}")
+            return
+
+    if installed:
+        console.print("[green]Prometheus installed.[/green]")
+    else:
+        console.print("[dim]Prometheus already installed — skipping.[/dim]")
+
+    with console.status("[dim]Starting port-forward to Prometheus...[/dim]"):
+        try:
+            start_port_forward()
+        except MonitoringError as e:
+            console.print(f"[yellow]Port-forward failed:[/yellow] {e}")
+            return
+
+    console.print("[green]Prometheus ready at http://localhost:9090[/green]")
+    console.print("[dim]Try: kube-mind \"something feels slow\"[/dim]")
+
+
 @app.command()
 def init(
     project: str = typer.Option(..., "--project", "-p", help="GCP project ID"),
     zone: str = typer.Option(..., "--zone", "-z", help="GCP zone, e.g. us-east1-b"),
     cluster: str = typer.Option(..., "--cluster", "-c", help="GKE cluster name"),
+    monitoring: bool = typer.Option(True, "--monitoring/--no-monitoring", help="Install Prometheus monitoring stack"),
 ):
     """Connect kube-mind to an existing GKE cluster and seed local state."""
     from kube_mind.tools.gcloud_tools import get_live_cluster_status
@@ -153,6 +195,9 @@ def init(
 
     console.print(f"[green]Initialized.[/green] Synced cluster [bold]{cluster}[/bold] to {state.path}")
     output.print_status(live, state.workloads)
+
+    if monitoring:
+        _setup_monitoring()
 
 
 @app.command()

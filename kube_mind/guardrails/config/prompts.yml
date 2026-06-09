@@ -13,6 +13,7 @@ prompts:
       - Asks to scale a deployment or manage workloads
       - Asks to cordon, drain, or taint nodes
       - Asks about cluster status, history, or configuration
+      - Asks about cluster health, performance, or whether anything is wrong (e.g. "is everything alright", "what's wrong", "something feels slow", "any issues", "check cluster health", "is the cluster healthy")
 
       User message: "{{ user_input }}"
 
