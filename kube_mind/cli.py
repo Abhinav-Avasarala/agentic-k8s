@@ -91,7 +91,7 @@ def _run_agent(intent: str, dry_run: bool = False) -> None:
 
     console.print("[dim]Executing...[/dim]")
     try:
-        verify_results = execute(ops, state._data)
+        verify_results, enriched_ops = execute(ops, state._data)
     except VerifyError as e:
         state.record(intent, ops, "failed")
         state.save()
@@ -101,7 +101,7 @@ def _run_agent(intent: str, dry_run: bool = False) -> None:
     if verify_results:
         output.print_verify_results(verify_results)
 
-    state.record(intent, ops, "success")
+    state.record(intent, enriched_ops, "success")
     state.save()
     console.print("[green]Done.[/green]")
 
@@ -130,11 +130,61 @@ def diff(
     intent: str = typer.Argument(..., help="Desired state in plain English"),
 ):
     """Show what WOULD change without executing — like terraform plan."""
+    import copy
+    from kube_mind.agent.graph import plan
+    from kube_mind.guardrails.guard import check_intent, check_ops, GuardrailsError
+
     state.load()
-    # Placeholder: the planner will populate desired_state once built
-    desired_state: dict = {"node_pools": []}
-    delta = state.diff(desired_state)
+    console.print(f"[bold cyan]→[/bold cyan] [italic]{intent}[/italic]")
+
+    with console.status("[dim]Checking safety...[/dim]"):
+        try:
+            check_intent(intent)
+        except GuardrailsError as e:
+            console.print(f"[red bold]Blocked:[/red bold] {e}")
+            return
+
+    with console.status("[dim]Planning...[/dim]"):
+        ops = plan(intent, state._data)
+
+    try:
+        check_ops(ops)
+    except GuardrailsError as e:
+        console.print(f"[red bold]Blocked:[/red bold] {e}")
+        return
+
+    # Simulate gcloud ops against current cluster state to derive desired node pools
+    desired_pools: dict = {p["name"]: copy.deepcopy(p) for p in state.cluster.get("node_pools", [])}
+    for op in ops:
+        if op["type"] != "gcloud":
+            continue
+        action, params = op["action"], op["params"]
+        if action == "create_node_pool":
+            desired_pools[params["name"]] = {
+                "name": params["name"],
+                "machine": params.get("machine", "e2-medium"),
+                "count": params.get("count", 1),
+            }
+        elif action == "delete_node_pool":
+            desired_pools.pop(params["name"], None)
+        elif action == "resize_node_pool":
+            if params["name"] in desired_pools:
+                desired_pools[params["name"]] = {**desired_pools[params["name"]], "count": params["count"]}
+
+    delta = state.diff({"node_pools": list(desired_pools.values())})
     output.print_diff(delta)
+
+    # Show kubectl / workload changes that don't appear in the node pool diff
+    kubectl_ops = [op for op in ops if op["type"] == "kubectl"]
+    if kubectl_ops:
+        console.print()
+        console.print("[dim]Workload changes (applied but not shown in diff above):[/dim]")
+        for op in kubectl_ops:
+            params = op.get("params", {})
+            summary = ", ".join(f"{k}={v}" for k, v in params.items())
+            console.print(f"  [cyan]{op['action']}[/cyan]  {summary}")
+
+    console.print()
     console.print("[dim]Run without 'diff' to apply.[/dim]")
 
 
@@ -256,6 +306,29 @@ def history():
     output.print_history(state.history)
 
 
+def _invert_op(op: dict) -> Optional[dict]:
+    """Return the inverse of op, or None if it cannot be auto-inverted."""
+    action = op["action"]
+    params = op["params"]
+    before = op.get("before", {})
+
+    if action == "create_node_pool":
+        return {"type": "gcloud", "action": "delete_node_pool", "params": {"name": params["name"]}}
+    if action == "delete_node_pool" and before:
+        return {"type": "gcloud", "action": "create_node_pool", "params": before}
+    if action == "resize_node_pool" and "count" in before:
+        return {"type": "gcloud", "action": "resize_node_pool", "params": {**params, "count": before["count"]}}
+    if action == "scale_deployment" and "replicas" in before:
+        return {"type": "kubectl", "action": "scale_deployment", "params": {**params, "replicas": before["replicas"]}}
+    if action == "cordon_node":
+        return {"type": "kubectl", "action": "uncordon_node", "params": params}
+    if action == "drain_node":
+        return {"type": "kubectl", "action": "uncordon_node", "params": params}
+    if action == "taint_node":
+        return {"type": "kubectl", "action": "untaint_node", "params": params}
+    return None
+
+
 @app.command()
 def undo():
     """Roll back the last operation by inverting the most recent change."""
@@ -266,12 +339,50 @@ def undo():
         raise typer.Exit()
 
     console.print(f"[bold]Last operation:[/bold] {last['input']} ({last['ts'][:19].replace('T', ' ')})")
-    if not output.confirm("Undo this operation?"):
+
+    mutable_ops = [op for op in last["ops"] if op.get("type") in ("gcloud", "kubectl")]
+    inverse_ops: list = []
+    skipped: list = []
+
+    for op in reversed(mutable_ops):
+        inv = _invert_op(op)
+        if inv:
+            inverse_ops.append(inv)
+        else:
+            skipped.append(op)
+
+    if not inverse_ops:
+        console.print("[yellow]Nothing to undo — no invertible ops found.[/yellow]")
+        if skipped:
+            console.print("[dim]Skipped (cannot auto-invert):[/dim]")
+            for op in skipped:
+                console.print(f"  [dim]• {op['action']}[/dim]")
+        raise typer.Exit()
+
+    output.print_plan(inverse_ops)
+
+    if skipped:
+        console.print(f"[yellow]⚠  {len(skipped)} op(s) cannot be auto-inverted and will be skipped:[/yellow]")
+        for op in skipped:
+            console.print(f"   [dim]• {op['action']}[/dim]")
+
+    if not output.confirm("Apply undo?"):
         console.print("[dim]Aborted.[/dim]")
         raise typer.Exit()
 
-    # Placeholder — agent will execute inverse ops in Step 6
-    console.print("[yellow]Undo execution not yet implemented (Step 6).[/yellow]")
+    from kube_mind.agent.graph import execute
+    from kube_mind.tools.prometheus_tools import VerifyError
+
+    console.print("[dim]Executing undo...[/dim]")
+    try:
+        execute(inverse_ops, state._data)
+    except VerifyError as e:
+        console.print(f"[red bold]Undo failed:[/red bold] {e}")
+        return
+
+    state.record(f"undo: {last['input']}", inverse_ops, "success")
+    state.save()
+    console.print("[green]Undone.[/green]")
 
 
 @app.command()

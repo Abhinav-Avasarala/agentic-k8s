@@ -69,10 +69,15 @@ class StateManager:
         desired_pools = {p["name"]: p for p in desired.get("node_pools", [])}
         current_pools = {p["name"]: p for p in current.get("node_pools", [])}
 
+        _cmp_fields = {"name", "machine", "count"}
+
+        def _norm(pool: dict) -> dict:
+            return {k: v for k, v in pool.items() if k in _cmp_fields}
+
         for name, pool in desired_pools.items():
             if name not in current_pools:
                 adds.append({"type": "node_pool", "name": name, "spec": pool})
-            elif pool != current_pools[name]:
+            elif _norm(pool) != _norm(current_pools[name]):
                 updates.append({"type": "node_pool", "name": name, "from": current_pools[name], "to": pool})
 
         for name in current_pools:

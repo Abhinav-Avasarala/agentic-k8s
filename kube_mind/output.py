@@ -61,7 +61,15 @@ def print_diff(delta: dict[str, Any]) -> None:
     for item in adds:
         lines.append(Text(f"  + add {item['type']}: {item['name']}", style="green"))
     for item in updates:
-        lines.append(Text(f"  ~ update {item['type']}: {item['name']}", style="yellow"))
+        from_pool = item.get("from", {})
+        to_pool = item.get("to", {})
+        changes = ", ".join(
+            f"{k}: {from_pool.get(k)} → {to_pool.get(k)}"
+            for k in ("machine", "count")
+            if from_pool.get(k) != to_pool.get(k)
+        )
+        suffix = f"  ({changes})" if changes else ""
+        lines.append(Text(f"  ~ update {item['type']}: {item['name']}{suffix}", style="yellow"))
     for item in deletes:
         lines.append(Text(f"  - delete {item['type']}: {item['name']}", style="red"))
 

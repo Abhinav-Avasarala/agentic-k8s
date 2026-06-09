@@ -96,3 +96,20 @@ def taint_node(params: dict[str, Any]) -> None:
     ]
     taints.append({"key": params["key"], "value": params["value"], "effect": params["effect"]})
     core.patch_node(node_name, {"spec": {"taints": taints}})
+
+
+def uncordon_node(params: dict[str, Any]) -> None:
+    core, _ = _apis()
+    core.patch_node(_node_name(params), {"spec": {"unschedulable": False}})
+
+
+def untaint_node(params: dict[str, Any]) -> None:
+    core, _ = _apis()
+    node_name = _node_name(params)
+    node = core.read_node(node_name)
+    taints = [
+        {"key": t.key, "value": t.value, "effect": t.effect}
+        for t in (node.spec.taints or [])
+        if not (t.key == params["key"] and t.effect == params["effect"])
+    ]
+    core.patch_node(node_name, {"spec": {"taints": taints}})

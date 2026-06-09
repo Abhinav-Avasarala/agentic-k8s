@@ -9,6 +9,8 @@ kube-mind "scale flask-app to 4 replicas"
 kube-mind "is everything alright"
 kube-mind "are any pods crash-looping?"
 kube-mind "how much CPU and memory is flask-app using?"
+kube-mind diff "scale default-pool to 5 nodes"   # preview changes without applying
+kube-mind undo                                     # roll back the last operation
 kube-mind status
 kube-mind history
 ```
@@ -134,12 +136,59 @@ gcloud auth application-default login
 | `kube-mind init --project P --zone Z --cluster C` | Connect to a GKE cluster, seed state, install Prometheus |
 | `kube-mind init ... --no-monitoring` | Same but skip Prometheus install |
 | `kube-mind "<intent>"` | Safety check → plan → confirm → execute → verify |
-| `kube-mind "<intent>" --dry-run` | Safety check → plan only, no changes |
+| `kube-mind "<intent>" --dry-run` | Safety check → plan only, print ops table, no changes applied |
+| `kube-mind diff "<intent>"` | Like `--dry-run` but shows a terraform-style state diff (adds / updates / deletes) instead of the raw ops list |
+| `kube-mind undo` | Invert and execute the last mutable operation |
 | `kube-mind status` | Fetch live cluster state from GKE, sync state.json |
 | `kube-mind history` | Show log of every past operation with timestamps and outcomes |
-| `kube-mind diff "<intent>"` | Show adds/updates/deletes without executing |
-| `kube-mind undo` | Roll back the last operation |
-| `kube-mind monitor` | Poll Prometheus for anomalies (Step 10 — not yet built) |
+| `kube-mind monitor` | Poll Prometheus for anomalies (not yet implemented) |
+
+### `diff` vs `--dry-run`
+
+Both preview changes without touching the cluster. The difference is what they show:
+
+```
+kube-mind "scale default-pool to 5 nodes" --dry-run
+```
+```
+  Planned Operations
+  # │ Type   │ Action           │ Params
+  1 │ gcloud │ resize_node_pool │ name=default-pool, count=5
+```
+
+```
+kube-mind diff "scale default-pool to 5 nodes"
+```
+```
+  Diff — what would change
+  ~ update node_pool: default-pool  (count: 3 → 5)
+  0 add(s), 1 update(s), 0 delete(s)
+```
+
+Use `--dry-run` to see what the agent decided to do. Use `diff` to see the net effect on cluster state.
+
+### `undo`
+
+`undo` inverts the last mutable operation and executes the inverse immediately. Before snapshot values (node count, replica count, pool spec) are captured at execution time and stored in history, so the inverse is always exact — not re-planned by the LLM.
+
+```bash
+kube-mind "scale default-pool to 5 nodes"   # count 3 → 5
+kube-mind undo                               # count 5 → 3  (exact, from saved before state)
+```
+
+Invertible operations:
+
+| Original op | Undo action |
+|---|---|
+| `create_node_pool` | `delete_node_pool` |
+| `delete_node_pool` | `create_node_pool` (restores saved machine type + count) |
+| `resize_node_pool` | `resize_node_pool` back to previous count |
+| `scale_deployment` | `scale_deployment` back to previous replicas |
+| `cordon_node` | `uncordon_node` |
+| `drain_node` | `uncordon_node` (partial — pods already rescheduled) |
+| `taint_node` | `untaint_node` |
+
+Operations that cannot be auto-inverted (e.g. `patch_resources` without a saved before state) are listed as skipped — the undoable ops in the same plan still run.
 
 ---
 
@@ -459,15 +508,51 @@ PASS  blocked: Refusing to resize 'batch-pool' to 0 nodes — that would evict a
 PASS  allowed: resize_node_pool({'name': 'batch-pool', 'count': 2})
 ```
 
-### 12 — Check history
+### 12 — Test `diff`
+
+```bash
+# Preview a resize without applying it
+kube-mind diff "scale default-pool to 5 nodes"
+```
+
+Expected — shows net state change, nothing applied:
+```
+  Diff — what would change
+  ~ update node_pool: default-pool  (count: 3 → 5)
+  0 add(s), 1 update(s), 0 delete(s)
+
+Run without 'diff' to apply.
+```
+
+```bash
+kube-mind status   # count should still be 3
+```
+
+### 13 — Test `undo`
+
+```bash
+# Apply a resize
+kube-mind "scale default-pool to 5 nodes"
+# confirm: y
+
+kube-mind status   # count: 5
+
+# Undo it — restores exact previous count from saved before state
+kube-mind undo
+# shows plan: resize_node_pool name=default-pool count=3, confirm: y
+
+kube-mind status   # count: 3 again
+```
+
+### 14 — Check history
 
 ```bash
 kube-mind history
 ```
 
-Expected: table with all operations (node pool create, deployment scale, node pool delete) with timestamps and `success` outcome.
+Expected: table with all operations — node pool create, deployment scale, node pool delete, diff previews do NOT appear, undo entries labeled `undo: scale default-pool to 5 nodes`.
 
-### 13 — Shut down
+### 15 — Shut down
 
 ```bash
 gcloud container clusters delete kubeagent-prod \
@@ -512,4 +597,6 @@ All code and operation history are local — nothing is lost. Recreate the clust
 | 7 | NeMo Guardrails safety layer | ✅ Done |
 | 8 | Human confirm gate for risky ops | ✅ Done |
 | 9 | Prometheus diagnose + verify steps | ✅ Done |
+| — | `diff` command (terraform-style state preview) | ✅ Done |
+| — | `undo` command (exact inverse from saved before state) | ✅ Done |
 | 10 | Monitor daemon | 🔜 Next |

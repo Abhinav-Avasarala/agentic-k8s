@@ -45,12 +45,45 @@ def planner_node(state: AgentState) -> AgentState:
     return {**state, "ops": _parse_ops(response.choices[0].message.content)}
 
 
+def _capture_before(op: dict[str, Any], cluster: dict[str, Any]) -> dict[str, Any]:
+    """Enrich a mutable op with its current state so it can be inverted by undo."""
+    action = op["action"]
+    params = op["params"]
+
+    if action == "resize_node_pool":
+        pool = next((p for p in cluster.get("node_pools", []) if p["name"] == params.get("name")), None)
+        if pool:
+            return {**op, "before": {"count": pool["count"]}}
+
+    elif action == "delete_node_pool":
+        pool = next((p for p in cluster.get("node_pools", []) if p["name"] == params.get("name")), None)
+        if pool:
+            return {**op, "before": pool}
+
+    elif action == "scale_deployment":
+        try:
+            from kube_mind.tools.kubectl_tools import _apis
+            _, apps = _apis()
+            dep = apps.read_namespaced_deployment(
+                name=params.get("deployment") or params["name"],
+                namespace=params.get("namespace", "default"),
+            )
+            return {**op, "before": {"replicas": dep.spec.replicas or 1}}
+        except Exception:
+            pass
+
+    return op
+
+
 def executor_node(state: AgentState) -> AgentState:
     if state.get("dry_run"):
         return state
 
     from kube_mind.tools.gcloud_tools import create_node_pool, delete_node_pool, resize_node_pool
-    from kube_mind.tools.kubectl_tools import scale_deployment, cordon_node, drain_node, patch_resources, taint_node
+    from kube_mind.tools.kubectl_tools import (
+        scale_deployment, cordon_node, drain_node, patch_resources,
+        taint_node, uncordon_node, untaint_node,
+    )
 
     _gcloud = {
         "create_node_pool": create_node_pool,
@@ -63,6 +96,8 @@ def executor_node(state: AgentState) -> AgentState:
         "drain_node": drain_node,
         "patch_resources": patch_resources,
         "taint_node": taint_node,
+        "uncordon_node": uncordon_node,
+        "untaint_node": untaint_node,
     }
 
     cluster = state["cluster_state"]["cluster"]
@@ -80,7 +115,14 @@ def executor_node(state: AgentState) -> AgentState:
         "prometheus_query": run_prometheus_query,
     }
 
+    enriched_ops: list[dict[str, Any]] = []
+    verify_results: list = list(state.get("verify_results", []))
+
     for op in state["ops"]:
+        if op["type"] in ("gcloud", "kubectl"):
+            op = _capture_before(op, cluster)
+        enriched_ops.append(op)
+
         if op["type"] == "gcloud":
             fn = _gcloud.get(op["action"])
             if fn:
@@ -93,9 +135,9 @@ def executor_node(state: AgentState) -> AgentState:
             fn = _verify.get(op["action"])
             if fn:
                 result = fn(op.get("params", {}))
-                state["verify_results"].append((op, result))
+                verify_results.append((op, result))
 
-    return state
+    return {**state, "ops": enriched_ops, "verify_results": verify_results}
 
 
 def build_graph():
@@ -125,10 +167,16 @@ def plan(intent: str, cluster_state: dict[str, Any]) -> list[dict[str, Any]]:
     return result["ops"]
 
 
-def execute(ops: list[dict[str, Any]], cluster_state: dict[str, Any]) -> list:
-    """Execute a pre-planned list of ops. Returns list of (op, result) pairs from verify steps."""
+def execute(
+    ops: list[dict[str, Any]], cluster_state: dict[str, Any]
+) -> tuple[list, list[dict[str, Any]]]:
+    """Execute a pre-planned list of ops.
+
+    Returns (verify_results, enriched_ops) where enriched_ops carry 'before'
+    state snapshots that undo needs to invert each op.
+    """
     result = executor_node({
         "ops": ops, "cluster_state": cluster_state,
         "dry_run": False, "intent": "", "verify_results": [],
     })
-    return result.get("verify_results", [])
+    return result.get("verify_results", []), result.get("ops", ops)
