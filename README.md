@@ -86,6 +86,12 @@ kube_mind/
     ├── prometheus_tools.py  # verify ops: check_nodes_ready, check_deployment_ready,
     │                        #   check_pod_scheduled, run_prometheus_query
     └── monitoring_tools.py  # install_prometheus (Helm), port-forward lifecycle
+
+eval/
+├── models.py         # Plug-and-play model adapters: OpenAIAdapter, AnthropicAdapter
+├── runner.py         # Runs adapters against test cases, parses responses, scores results
+├── scoring.py        # Precision/recall/F1 with greedy matching, synonym resolution, wildcards
+└── test_cases.json   # 19 labelled test cases across all op categories
 ```
 
 ---
@@ -141,6 +147,7 @@ gcloud auth application-default login
 | `kube-mind undo` | Invert and execute the last mutable operation |
 | `kube-mind status` | Fetch live cluster state from GKE, sync state.json |
 | `kube-mind history` | Show log of every past operation with timestamps and outcomes |
+| `kube-mind eval` | Run the agent evaluation harness against labelled test cases |
 | `kube-mind monitor` | Poll Prometheus for anomalies (not yet implemented) |
 
 ### `diff` vs `--dry-run`
@@ -189,6 +196,72 @@ Invertible operations:
 | `taint_node` | `untaint_node` |
 
 Operations that cannot be auto-inverted (e.g. `patch_resources` without a saved before state) are listed as skipped — the undoable ops in the same plan still run.
+
+---
+
+## Agent evaluation
+
+kube-mind ships an evaluation harness that measures the planner's output quality against a set of labelled test cases — without running against a live cluster.
+
+```bash
+# Evaluate the default model (gpt-4o) across all 19 test cases
+kube-mind eval --model gpt-4o
+
+# Compare two models side by side
+kube-mind eval --model gpt-4o --model claude-sonnet-4-6
+
+# Filter to a specific category and save raw results
+kube-mind eval --model gpt-4o --tag resize --verbose --output results.json
+```
+
+### What it measures
+
+Each test case is a `(cluster_state, intent, expected_ops)` triple. The harness calls the planner's system prompt and user message format directly — identical to what the LangGraph `planner_node` sends — and scores the response.
+
+**Scoring** uses precision, recall, and F1 per case:
+- **Precision** — fraction of generated ops that were expected (penalises hallucinated steps)
+- **Recall** — fraction of expected ops that were generated (penalises missing steps)
+- **F1 ≥ 0.8** = pass
+
+Two ops match if their action is equal (or a known synonym) and all key params match. Matching is flexible by design:
+- `check_pod_scheduled` and `check_deployment_ready` are treated as equivalent post-scale verify steps
+- `null` in an expected param acts as a wildcard — accepts any generated value (used when the model names things non-deterministically, e.g. GPU pool names)
+- `size` and `count` are normalised to the same param; whole-number floats (`5.0`) match integer values (`5`)
+
+### Test case categories
+
+| Category | Cases | What it tests |
+|---|---|---|
+| Resize | `resize_up`, `resize_down`, `resize_add_more`, `resize_noop` | Absolute and relative node count changes; no-op detection |
+| Create pool | `create_pool_basic`, `create_pool_gpu`, `create_pool_gpu_isolated` | Standard pool; GPU defaults; GPU + taint for workload isolation |
+| Delete pool | `delete_pool` | Non-default pool removal |
+| Deployments | `scale_deployment_up`, `scale_deployment_down` | Replica scaling with verify |
+| Node ops | `cordon_node`, `drain_node`, `taint_node` | Single-node maintenance operations |
+| Health checks | `health_check_alright`, `health_check_slow`, `health_check_wrong` | Vague intent → exactly three Prometheus queries |
+| Specific queries | `crash_loop_check`, `busiest_node`, `pod_restarts` | Targeted single-metric queries |
+
+### Sample output
+
+```
+                         Eval — gpt-4o  (19 cases)
+╭──────────────────────────────┬──────────────────┬──────┬──────┬──────┬──────╮
+│ Case                         │ Tags             │   F1 │    P │    R │   ms │
+├──────────────────────────────┼──────────────────┼──────┼──────┼──────┼──────┤
+│ ✓ resize_up                  │ resize, gcloud   │ 1.00 │ 1.00 │ 1.00 │ 1243 │
+│ ✓ drain_node                 │ kubectl, node    │ 1.00 │ 1.00 │ 1.00 │ 1821 │
+│ ✓ health_check_alright       │ verify, health   │ 1.00 │ 1.00 │ 1.00 │ 1654 │
+│ ✗ resize_noop                │ resize, noop     │ 0.00 │ 0.00 │ 1.00 │ 1102 │
+│  ...                         │                  │      │      │      │      │
+╰──────────────────────────────┴──────────────────┴──────┴──────┴──────┴──────╯
+
+  17/19 passed (89%)  avg F1: 0.90  avg latency: 1812ms  est. cost: ~$0.091
+```
+
+### Known model limitations surfaced by eval
+
+| Case | Issue |
+|---|---|
+| `resize_noop` | gpt-4o generates a resize op even when the pool is already at the requested count — it does not detect the no-op |
 
 ---
 
@@ -599,4 +672,5 @@ All code and operation history are local — nothing is lost. Recreate the clust
 | 9 | Prometheus diagnose + verify steps | ✅ Done |
 | — | `diff` command (terraform-style state preview) | ✅ Done |
 | — | `undo` command (exact inverse from saved before state) | ✅ Done |
+| — | Agent evaluation harness (19 cases, plug-and-play models) | ✅ Done |
 | 10 | Monitor daemon | 🔜 Next |

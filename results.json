@@ -1,0 +1,1011 @@
+{
+  "gpt-4o": [
+    {
+      "case_id": "resize_up",
+      "description": "Scale up an existing node pool",
+      "tags": [
+        "resize",
+        "gcloud",
+        "verify"
+      ],
+      "generated_ops": [
+        {
+          "type": "gcloud",
+          "action": "resize_node_pool",
+          "params": {
+            "name": "default-pool",
+            "size": 5
+          },
+          "description": "Scale default-pool to 5 nodes"
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {
+            "pool": "default-pool"
+          },
+          "description": "Confirm all nodes in default-pool are ready"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "gcloud",
+          "action": "resize_node_pool",
+          "params": {
+            "name": "default-pool",
+            "count": 5
+          }
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {
+            "pool": "default-pool"
+          }
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 2069,
+      "prompt_tokens": 1362,
+      "completion_tokens": 88,
+      "error": ""
+    },
+    {
+      "case_id": "resize_down",
+      "description": "Scale down an existing node pool \u2014 model should still verify after resize",
+      "tags": [
+        "resize",
+        "gcloud",
+        "verify"
+      ],
+      "generated_ops": [
+        {
+          "type": "gcloud",
+          "action": "resize_node_pool",
+          "params": {
+            "name": "default-pool",
+            "size": 2
+          },
+          "description": "Scale down default-pool to 2 nodes"
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {
+            "pool": "default-pool"
+          },
+          "description": "Confirm nodes are ready after scaling down"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "gcloud",
+          "action": "resize_node_pool",
+          "params": {
+            "name": "default-pool",
+            "count": 2
+          }
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {
+            "pool": "default-pool"
+          }
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 1607,
+      "prompt_tokens": 1363,
+      "completion_tokens": 87,
+      "error": ""
+    },
+    {
+      "case_id": "resize_add_more",
+      "description": "Add N more nodes \u2014 agent must compute new absolute count",
+      "tags": [
+        "resize",
+        "gcloud",
+        "arithmetic",
+        "verify"
+      ],
+      "generated_ops": [
+        {
+          "type": "gcloud",
+          "action": "resize_node_pool",
+          "params": {
+            "name": "default-pool",
+            "count": 5
+          },
+          "description": "Add 2 more nodes to default-pool"
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {
+            "pool": "default-pool"
+          },
+          "description": "Confirm all nodes in default-pool are ready"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "gcloud",
+          "action": "resize_node_pool",
+          "params": {
+            "name": "default-pool",
+            "count": 5
+          }
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {
+            "pool": "default-pool"
+          }
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 1327,
+      "prompt_tokens": 1363,
+      "completion_tokens": 89,
+      "error": ""
+    },
+    {
+      "case_id": "resize_noop",
+      "description": "No-op \u2014 pool is already at the requested size. Model should return empty plan.",
+      "tags": [
+        "resize",
+        "noop"
+      ],
+      "generated_ops": [
+        {
+          "type": "gcloud",
+          "action": "resize_node_pool",
+          "params": {
+            "name": "default-pool",
+            "size": 3
+          },
+          "description": "Ensure default-pool remains at 3 nodes"
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {
+            "pool": "default-pool"
+          },
+          "description": "Confirm default-pool is stable at 3 nodes"
+        }
+      ],
+      "expected_ops": [],
+      "precision": 0.0,
+      "recall": 1.0,
+      "f1": 0.0,
+      "latency_ms": 1424,
+      "prompt_tokens": 1363,
+      "completion_tokens": 90,
+      "error": ""
+    },
+    {
+      "case_id": "create_pool_basic",
+      "description": "Create a new node pool with explicit spec",
+      "tags": [
+        "create",
+        "gcloud",
+        "verify"
+      ],
+      "generated_ops": [
+        {
+          "type": "gcloud",
+          "action": "create_node_pool",
+          "params": {
+            "name": "batch-pool",
+            "machine": "e2-small",
+            "count": 2
+          },
+          "description": "Add new node pool for batch processing with e2-small nodes"
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {
+            "pool": "batch-pool"
+          },
+          "description": "Confirm batch pool nodes are ready"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "gcloud",
+          "action": "create_node_pool",
+          "params": {
+            "name": "batch-pool",
+            "machine": "e2-small",
+            "count": 2
+          }
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {
+            "pool": "batch-pool"
+          }
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 1719,
+      "prompt_tokens": 1369,
+      "completion_tokens": 97,
+      "error": ""
+    },
+    {
+      "case_id": "create_pool_gpu",
+      "description": "Create a GPU node pool \u2014 agent must infer n1-standard-4 + T4",
+      "tags": [
+        "create",
+        "gcloud",
+        "gpu",
+        "verify"
+      ],
+      "generated_ops": [
+        {
+          "type": "gcloud",
+          "action": "create_node_pool",
+          "params": {
+            "name": "gpu-pool",
+            "machine": "n1-standard-4",
+            "gpu": "T4",
+            "count": 1
+          },
+          "description": "Add GPU node pool for ML inference"
+        },
+        {
+          "type": "kubectl",
+          "action": "taint_node",
+          "params": {
+            "node": "gpu-pool-node-0",
+            "key": "gpu",
+            "value": "true",
+            "effect": "NoSchedule"
+          },
+          "description": "Reserve GPU nodes for ML workloads only"
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {
+            "pool": "gpu-pool"
+          },
+          "description": "Confirm GPU node is ready"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "gcloud",
+          "action": "create_node_pool",
+          "params": {
+            "name": "gpu-pool"
+          }
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {
+            "pool": "gpu-pool"
+          }
+        }
+      ],
+      "precision": 0.6666666666666666,
+      "recall": 1.0,
+      "f1": 0.8,
+      "latency_ms": 3828,
+      "prompt_tokens": 1362,
+      "completion_tokens": 161,
+      "error": ""
+    },
+    {
+      "case_id": "create_pool_gpu_isolated",
+      "description": "GPU pool with taint for workload isolation \u2014 agent must include taint op",
+      "tags": [
+        "create",
+        "gcloud",
+        "gpu",
+        "kubectl",
+        "verify"
+      ],
+      "generated_ops": [
+        {
+          "type": "gcloud",
+          "action": "create_node_pool",
+          "params": {
+            "name": "gpu-inference-pool",
+            "machine": "n1-standard-4",
+            "gpu": "T4",
+            "count": 1
+          },
+          "description": "Create a GPU node pool for ML inference workloads"
+        },
+        {
+          "type": "kubectl",
+          "action": "taint_node",
+          "params": {
+            "node": "gpu-inference-pool-node-0",
+            "key": "gpu",
+            "value": "true",
+            "effect": "NoSchedule"
+          },
+          "description": "Taint GPU node to isolate it for inference workloads"
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {
+            "pool": "gpu-inference-pool"
+          },
+          "description": "Verify GPU node is ready for workloads"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "gcloud",
+          "action": "create_node_pool",
+          "params": {
+            "name": null
+          }
+        },
+        {
+          "type": "kubectl",
+          "action": "taint_node",
+          "params": {
+            "key": "gpu",
+            "effect": "NoSchedule"
+          }
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {
+            "pool": null
+          }
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 2940,
+      "prompt_tokens": 1366,
+      "completion_tokens": 174,
+      "error": ""
+    },
+    {
+      "case_id": "delete_pool",
+      "description": "Delete a non-default pool \u2014 model may optionally add a post-delete health check",
+      "tags": [
+        "delete",
+        "gcloud"
+      ],
+      "generated_ops": [
+        {
+          "type": "gcloud",
+          "action": "delete_node_pool",
+          "params": {
+            "name": "batch-pool",
+            "zone": "us-east1-b",
+            "cluster": "kubeagent-prod"
+          },
+          "description": "Remove the batch-pool node pool from the cluster"
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {
+            "pool": "default-pool"
+          },
+          "description": "Confirm that the remaining nodes in default-pool are ready"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "gcloud",
+          "action": "delete_node_pool",
+          "params": {
+            "name": "batch-pool"
+          }
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {}
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 2039,
+      "prompt_tokens": 1395,
+      "completion_tokens": 104,
+      "error": ""
+    },
+    {
+      "case_id": "scale_deployment_up",
+      "description": "Scale a deployment to more replicas \u2014 model uses check_pod_scheduled as verify",
+      "tags": [
+        "kubectl",
+        "deployment",
+        "verify"
+      ],
+      "generated_ops": [
+        {
+          "type": "kubectl",
+          "action": "scale_deployment",
+          "params": {
+            "name": "flask-app",
+            "replicas": 4
+          },
+          "description": "Scale flask-app to 4 replicas"
+        },
+        {
+          "type": "verify",
+          "action": "check_deployment_ready",
+          "params": {
+            "name": "flask-app"
+          },
+          "description": "Verify flask-app is scaled and ready"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "kubectl",
+          "action": "scale_deployment",
+          "params": {
+            "name": "flask-app",
+            "replicas": 4
+          }
+        },
+        {
+          "type": "verify",
+          "action": "check_pod_scheduled",
+          "params": {
+            "deployment": "flask-app"
+          }
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 1101,
+      "prompt_tokens": 1384,
+      "completion_tokens": 87,
+      "error": ""
+    },
+    {
+      "case_id": "scale_deployment_down",
+      "description": "Scale a deployment down \u2014 model adds check_deployment_ready as verify",
+      "tags": [
+        "kubectl",
+        "deployment",
+        "verify"
+      ],
+      "generated_ops": [
+        {
+          "type": "kubectl",
+          "action": "scale_deployment",
+          "params": {
+            "name": "flask-app",
+            "replicas": 1
+          },
+          "description": "Scale flask-app deployment down to 1 replica"
+        },
+        {
+          "type": "verify",
+          "action": "check_deployment_ready",
+          "params": {
+            "name": "flask-app"
+          },
+          "description": "Verify flask-app deployment is scaled and ready"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "kubectl",
+          "action": "scale_deployment",
+          "params": {
+            "name": "flask-app",
+            "replicas": 1
+          }
+        },
+        {
+          "type": "verify",
+          "action": "check_deployment_ready",
+          "params": {
+            "deployment": "flask-app"
+          }
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 1526,
+      "prompt_tokens": 1385,
+      "completion_tokens": 90,
+      "error": ""
+    },
+    {
+      "case_id": "cordon_node",
+      "description": "Cordon a specific node \u2014 model adds check_nodes_ready after",
+      "tags": [
+        "kubectl",
+        "node",
+        "verify"
+      ],
+      "generated_ops": [
+        {
+          "type": "kubectl",
+          "action": "cordon_node",
+          "params": {
+            "node": "gke-kubeagent-prod-default-pool-a1b2c3d4-0abc"
+          },
+          "description": "Cordon the specified node to prevent new pods from being scheduled on it"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "kubectl",
+          "action": "cordon_node",
+          "params": {
+            "name": "gke-kubeagent-prod-default-pool-a1b2c3d4-0abc"
+          }
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {}
+        }
+      ],
+      "precision": 1.0,
+      "recall": 0.5,
+      "f1": 0.6666666666666666,
+      "latency_ms": 1388,
+      "prompt_tokens": 1376,
+      "completion_tokens": 72,
+      "error": ""
+    },
+    {
+      "case_id": "drain_node",
+      "description": "Drain a node \u2014 model correctly cordons first, then drains, then verifies",
+      "tags": [
+        "kubectl",
+        "node",
+        "verify"
+      ],
+      "generated_ops": [
+        {
+          "type": "kubectl",
+          "action": "cordon_node",
+          "params": {
+            "node": "gke-kubeagent-prod-default-pool-a1b2c3d4-0abc"
+          },
+          "description": "Cordon the node gke-kubeagent-prod-default-pool-a1b2c3d4-0abc to prevent new pods from being scheduled on it"
+        },
+        {
+          "type": "kubectl",
+          "action": "drain_node",
+          "params": {
+            "node": "gke-kubeagent-prod-default-pool-a1b2c3d4-0abc",
+            "ignore_daemonsets": true,
+            "delete_emptydir_data": true
+          },
+          "description": "Drain the node gke-kubeagent-prod-default-pool-a1b2c3d4-0abc for maintenance, ensuring no pods are running on it"
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {
+            "pool": "default-pool"
+          },
+          "description": "Confirm remaining nodes are ready and handling workloads"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "kubectl",
+          "action": "cordon_node",
+          "params": {
+            "name": "gke-kubeagent-prod-default-pool-a1b2c3d4-0abc"
+          }
+        },
+        {
+          "type": "kubectl",
+          "action": "drain_node",
+          "params": {
+            "name": "gke-kubeagent-prod-default-pool-a1b2c3d4-0abc"
+          }
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {}
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 2594,
+      "prompt_tokens": 1377,
+      "completion_tokens": 221,
+      "error": ""
+    },
+    {
+      "case_id": "taint_node",
+      "description": "Taint a node \u2014 model adds check_nodes_ready after",
+      "tags": [
+        "kubectl",
+        "node",
+        "taint",
+        "verify"
+      ],
+      "generated_ops": [
+        {
+          "type": "kubectl",
+          "action": "taint_node",
+          "params": {
+            "node": "gke-kubeagent-prod-gpu-pool-a1b2c3d4-0abc",
+            "key": "gpu",
+            "value": "true",
+            "effect": "NoSchedule"
+          },
+          "description": "Reserve GPU nodes for ML workloads only"
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {},
+          "description": "Verify cluster node statuses"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "kubectl",
+          "action": "taint_node",
+          "params": {
+            "key": "gpu",
+            "effect": "NoSchedule"
+          }
+        },
+        {
+          "type": "verify",
+          "action": "check_nodes_ready",
+          "params": {}
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 2306,
+      "prompt_tokens": 1422,
+      "completion_tokens": 127,
+      "error": ""
+    },
+    {
+      "case_id": "health_check_alright",
+      "description": "General health question \u2192 exactly 3 prometheus_query ops, no mutations",
+      "tags": [
+        "verify",
+        "health",
+        "prometheus"
+      ],
+      "generated_ops": [
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {
+            "query": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+            "label": "CPU usage",
+            "unit": "%",
+            "warn_above": 70,
+            "crit_above": 85
+          },
+          "description": "Cluster CPU usage"
+        },
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {
+            "query": "100 * (1 - avg(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))",
+            "label": "Memory usage",
+            "unit": "%",
+            "warn_above": 80,
+            "crit_above": 90
+          },
+          "description": "Cluster memory usage"
+        },
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {
+            "query": "count by (namespace, phase) (kube_pod_status_phase{namespace!~\"kube-system|kube-public|kube-node-lease\"} == 1)",
+            "label": "Pod health"
+          },
+          "description": "Pod phase distribution"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {}
+        },
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {}
+        },
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {}
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 2380,
+      "prompt_tokens": 1357,
+      "completion_tokens": 236,
+      "error": ""
+    },
+    {
+      "case_id": "health_check_slow",
+      "description": "Vague perf concern \u2192 same 3-op health check",
+      "tags": [
+        "verify",
+        "health",
+        "prometheus"
+      ],
+      "generated_ops": [
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {
+            "query": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+            "label": "CPU usage",
+            "unit": "%",
+            "warn_above": 70,
+            "crit_above": 85
+          },
+          "description": "Cluster CPU usage"
+        },
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {
+            "query": "100 * (1 - avg(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))",
+            "label": "Memory usage",
+            "unit": "%",
+            "warn_above": 80,
+            "crit_above": 90
+          },
+          "description": "Cluster memory usage"
+        },
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {
+            "query": "count by (namespace, phase) (kube_pod_status_phase{namespace!~\"kube-system|kube-public|kube-node-lease\"} == 1)",
+            "label": "Pod health"
+          },
+          "description": "Pod phase distribution"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {}
+        },
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {}
+        },
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {}
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 2337,
+      "prompt_tokens": 1357,
+      "completion_tokens": 236,
+      "error": ""
+    },
+    {
+      "case_id": "health_check_wrong",
+      "description": "Explicit 'what's wrong' \u2192 same 3-op health check",
+      "tags": [
+        "verify",
+        "health",
+        "prometheus"
+      ],
+      "generated_ops": [
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {
+            "query": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+            "label": "CPU usage",
+            "unit": "%",
+            "warn_above": 70,
+            "crit_above": 85
+          },
+          "description": "Cluster CPU usage"
+        },
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {
+            "query": "100 * (1 - avg(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))",
+            "label": "Memory usage",
+            "unit": "%",
+            "warn_above": 80,
+            "crit_above": 90
+          },
+          "description": "Cluster memory usage"
+        },
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {
+            "query": "count by (namespace, phase) (kube_pod_status_phase{namespace!~\"kube-system|kube-public|kube-node-lease\"} == 1)",
+            "label": "Pod health"
+          },
+          "description": "Pod phase distribution"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {}
+        },
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {}
+        },
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {}
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 2359,
+      "prompt_tokens": 1359,
+      "completion_tokens": 236,
+      "error": ""
+    },
+    {
+      "case_id": "crash_loop_check",
+      "description": "Specific crash-loop query \u2192 single prometheus_query",
+      "tags": [
+        "verify",
+        "prometheus",
+        "specific"
+      ],
+      "generated_ops": [
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {
+            "query": "sum(kube_pod_container_status_waiting_reason{reason=\"CrashLoopBackOff\",namespace!~\"kube-system|kube-public|kube-node-lease\"}) or vector(0)",
+            "label": "Crash-looping pods",
+            "unit": "pods",
+            "crit_above": 0
+          },
+          "description": "Check for crash-looping pods"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {}
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 1729,
+      "prompt_tokens": 1361,
+      "completion_tokens": 100,
+      "error": ""
+    },
+    {
+      "case_id": "busiest_node",
+      "description": "Node CPU hotspot query \u2192 single prometheus_query",
+      "tags": [
+        "verify",
+        "prometheus",
+        "specific"
+      ],
+      "generated_ops": [
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {
+            "query": "topk(1, 100 - (avg by (node) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100))",
+            "label": "Busiest node CPU",
+            "unit": "%",
+            "warn_above": 70,
+            "crit_above": 85
+          },
+          "description": "Identify the node with the highest CPU load"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {}
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 1212,
+      "prompt_tokens": 1362,
+      "completion_tokens": 102,
+      "error": ""
+    },
+    {
+      "case_id": "pod_restarts",
+      "description": "Pod restart count query \u2192 single prometheus_query",
+      "tags": [
+        "verify",
+        "prometheus",
+        "specific"
+      ],
+      "generated_ops": [
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {
+            "query": "sum(increase(kube_pod_container_status_restarts_total{namespace!~\"kube-system|kube-public|kube-node-lease\"}[1h])) or vector(0)",
+            "label": "Pod restarts (1h)",
+            "unit": "restarts",
+            "warn_above": 0
+          },
+          "description": "Check for any pod restarts in the last hour"
+        }
+      ],
+      "expected_ops": [
+        {
+          "type": "verify",
+          "action": "prometheus_query",
+          "params": {}
+        }
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "latency_ms": 1392,
+      "prompt_tokens": 1363,
+      "completion_tokens": 119,
+      "error": ""
+    }
+  ]
+}

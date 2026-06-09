@@ -1,0 +1,369 @@
+[
+  {
+    "id": "resize_up",
+    "description": "Scale up an existing node pool",
+    "tags": ["resize", "gcloud", "verify"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "scale default-pool to 5 nodes",
+    "expected_ops": [
+      {"type": "gcloud", "action": "resize_node_pool", "params": {"name": "default-pool", "count": 5}},
+      {"type": "verify", "action": "check_nodes_ready", "params": {"pool": "default-pool"}}
+    ]
+  },
+
+  {
+    "id": "resize_down",
+    "description": "Scale down an existing node pool — model should still verify after resize",
+    "tags": ["resize", "gcloud", "verify"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 5, "status": "RUNNING"}]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "scale default-pool down to 2 nodes",
+    "expected_ops": [
+      {"type": "gcloud", "action": "resize_node_pool", "params": {"name": "default-pool", "count": 2}},
+      {"type": "verify", "action": "check_nodes_ready", "params": {"pool": "default-pool"}}
+    ]
+  },
+
+  {
+    "id": "resize_add_more",
+    "description": "Add N more nodes — agent must compute new absolute count",
+    "tags": ["resize", "gcloud", "arithmetic", "verify"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "add 2 more nodes to default-pool",
+    "expected_ops": [
+      {"type": "gcloud", "action": "resize_node_pool", "params": {"name": "default-pool", "count": 5}},
+      {"type": "verify", "action": "check_nodes_ready", "params": {"pool": "default-pool"}}
+    ]
+  },
+
+  {
+    "id": "resize_noop",
+    "description": "No-op — pool is already at the requested size. Model should return empty plan.",
+    "tags": ["resize", "noop"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "ensure default-pool stays at 3 nodes",
+    "expected_ops": []
+  },
+
+  {
+    "id": "create_pool_basic",
+    "description": "Create a new node pool with explicit spec",
+    "tags": ["create", "gcloud", "verify"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "add a node pool called batch-pool with 2 e2-small nodes",
+    "expected_ops": [
+      {"type": "gcloud", "action": "create_node_pool", "params": {"name": "batch-pool", "machine": "e2-small", "count": 2}},
+      {"type": "verify", "action": "check_nodes_ready", "params": {"pool": "batch-pool"}}
+    ]
+  },
+
+  {
+    "id": "create_pool_gpu",
+    "description": "Create a GPU node pool — agent must infer n1-standard-4 + T4",
+    "tags": ["create", "gcloud", "gpu", "verify"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "add a GPU node pool for ML inference",
+    "expected_ops": [
+      {"type": "gcloud", "action": "create_node_pool", "params": {"name": "gpu-pool"}},
+      {"type": "verify", "action": "check_nodes_ready", "params": {"pool": "gpu-pool"}}
+    ]
+  },
+
+  {
+    "id": "create_pool_gpu_isolated",
+    "description": "GPU pool with taint for workload isolation — agent must include taint op",
+    "tags": ["create", "gcloud", "gpu", "kubectl", "verify"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "set up a GPU node pool for inference with proper workload isolation",
+    "expected_ops": [
+      {"type": "gcloud", "action": "create_node_pool", "params": {"name": null}},
+      {"type": "kubectl", "action": "taint_node", "params": {"key": "gpu", "effect": "NoSchedule"}},
+      {"type": "verify", "action": "check_nodes_ready", "params": {"pool": null}}
+    ]
+  },
+
+  {
+    "id": "delete_pool",
+    "description": "Delete a non-default pool — model may optionally add a post-delete health check",
+    "tags": ["delete", "gcloud"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [
+          {"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"},
+          {"name": "batch-pool",   "machine": "e2-small",  "count": 2, "status": "RUNNING"}
+        ]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "remove batch-pool",
+    "expected_ops": [
+      {"type": "gcloud", "action": "delete_node_pool", "params": {"name": "batch-pool"}},
+      {"type": "verify", "action": "check_nodes_ready", "params": {}}
+    ]
+  },
+
+  {
+    "id": "scale_deployment_up",
+    "description": "Scale a deployment to more replicas — model uses check_pod_scheduled as verify",
+    "tags": ["kubectl", "deployment", "verify"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [{"name": "flask-app", "replicas": 2}],
+      "history": []
+    },
+    "intent": "scale flask-app to 4 replicas",
+    "expected_ops": [
+      {"type": "kubectl", "action": "scale_deployment", "params": {"name": "flask-app", "replicas": 4}},
+      {"type": "verify", "action": "check_pod_scheduled", "params": {"deployment": "flask-app"}}
+    ]
+  },
+
+  {
+    "id": "scale_deployment_down",
+    "description": "Scale a deployment down — model adds check_deployment_ready as verify",
+    "tags": ["kubectl", "deployment", "verify"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [{"name": "flask-app", "replicas": 4}],
+      "history": []
+    },
+    "intent": "scale flask-app down to 1 replica",
+    "expected_ops": [
+      {"type": "kubectl", "action": "scale_deployment", "params": {"name": "flask-app", "replicas": 1}},
+      {"type": "verify", "action": "check_deployment_ready", "params": {"deployment": "flask-app"}}
+    ]
+  },
+
+  {
+    "id": "cordon_node",
+    "description": "Cordon a specific node — model adds check_nodes_ready after",
+    "tags": ["kubectl", "node", "verify"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "cordon gke-kubeagent-prod-default-pool-a1b2c3d4-0abc",
+    "expected_ops": [
+      {"type": "kubectl", "action": "cordon_node", "params": {"name": "gke-kubeagent-prod-default-pool-a1b2c3d4-0abc"}},
+      {"type": "verify", "action": "check_nodes_ready", "params": {}}
+    ]
+  },
+
+  {
+    "id": "drain_node",
+    "description": "Drain a node — model correctly cordons first, then drains, then verifies",
+    "tags": ["kubectl", "node", "verify"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "drain gke-kubeagent-prod-default-pool-a1b2c3d4-0abc for maintenance",
+    "expected_ops": [
+      {"type": "kubectl", "action": "cordon_node",  "params": {"name": "gke-kubeagent-prod-default-pool-a1b2c3d4-0abc"}},
+      {"type": "kubectl", "action": "drain_node",   "params": {"name": "gke-kubeagent-prod-default-pool-a1b2c3d4-0abc"}},
+      {"type": "verify",  "action": "check_nodes_ready", "params": {}}
+    ]
+  },
+
+  {
+    "id": "taint_node",
+    "description": "Taint a node — model adds check_nodes_ready after",
+    "tags": ["kubectl", "node", "taint", "verify"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [
+          {"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"},
+          {"name": "gpu-pool",     "machine": "n1-standard-4", "count": 1, "status": "RUNNING"}
+        ]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "taint gke-kubeagent-prod-gpu-pool-a1b2c3d4-0abc with gpu=true:NoSchedule",
+    "expected_ops": [
+      {"type": "kubectl", "action": "taint_node",        "params": {"key": "gpu", "effect": "NoSchedule"}},
+      {"type": "verify",  "action": "check_nodes_ready", "params": {}}
+    ]
+  },
+
+  {
+    "id": "health_check_alright",
+    "description": "General health question → exactly 3 prometheus_query ops, no mutations",
+    "tags": ["verify", "health", "prometheus"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "is everything alright",
+    "expected_ops": [
+      {"type": "verify", "action": "prometheus_query", "params": {}},
+      {"type": "verify", "action": "prometheus_query", "params": {}},
+      {"type": "verify", "action": "prometheus_query", "params": {}}
+    ]
+  },
+
+  {
+    "id": "health_check_slow",
+    "description": "Vague perf concern → same 3-op health check",
+    "tags": ["verify", "health", "prometheus"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "something feels slow",
+    "expected_ops": [
+      {"type": "verify", "action": "prometheus_query", "params": {}},
+      {"type": "verify", "action": "prometheus_query", "params": {}},
+      {"type": "verify", "action": "prometheus_query", "params": {}}
+    ]
+  },
+
+  {
+    "id": "health_check_wrong",
+    "description": "Explicit 'what's wrong' → same 3-op health check",
+    "tags": ["verify", "health", "prometheus"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "what's wrong with the cluster",
+    "expected_ops": [
+      {"type": "verify", "action": "prometheus_query", "params": {}},
+      {"type": "verify", "action": "prometheus_query", "params": {}},
+      {"type": "verify", "action": "prometheus_query", "params": {}}
+    ]
+  },
+
+  {
+    "id": "crash_loop_check",
+    "description": "Specific crash-loop query → single prometheus_query",
+    "tags": ["verify", "prometheus", "specific"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "are any pods crash-looping?",
+    "expected_ops": [
+      {"type": "verify", "action": "prometheus_query", "params": {}}
+    ]
+  },
+
+  {
+    "id": "busiest_node",
+    "description": "Node CPU hotspot query → single prometheus_query",
+    "tags": ["verify", "prometheus", "specific"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "which node is under the most load?",
+    "expected_ops": [
+      {"type": "verify", "action": "prometheus_query", "params": {}}
+    ]
+  },
+
+  {
+    "id": "pod_restarts",
+    "description": "Pod restart count query → single prometheus_query",
+    "tags": ["verify", "prometheus", "specific"],
+    "cluster_state": {
+      "cluster": {
+        "name": "kubeagent-prod", "zone": "us-east1-b", "project": "agent-k8s-498319",
+        "status": "RUNNING",
+        "node_pools": [{"name": "default-pool", "machine": "e2-medium", "count": 3, "status": "RUNNING"}]
+      },
+      "workloads": [], "history": []
+    },
+    "intent": "any pod restarts in the last hour?",
+    "expected_ops": [
+      {"type": "verify", "action": "prometheus_query", "params": {}}
+    ]
+  }
+]

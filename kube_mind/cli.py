@@ -1,7 +1,10 @@
 import sys
 import typer
-from typing import Optional
+from pathlib import Path
+from typing import Optional, List
 from rich.console import Console
+from rich.table import Table
+from rich import box
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -9,7 +12,7 @@ load_dotenv()
 from kube_mind.state import StateManager
 from kube_mind import output
 
-_SUBCOMMANDS = {"diff", "status", "history", "undo", "monitor", "init"}
+_SUBCOMMANDS = {"diff", "status", "history", "undo", "monitor", "init", "eval"}
 
 app = typer.Typer(
     name="kube-mind",
@@ -398,3 +401,140 @@ def monitor(
 
     # Placeholder — Prometheus polling added in Step 10
     console.print("[yellow]Monitor daemon not yet implemented (Step 10).[/yellow]")
+
+
+@app.command(name="eval")
+def eval_models(
+    model: Optional[List[str]] = typer.Option(None, "--model", "-m", help="Model(s) to evaluate, e.g. gpt-4o, claude-sonnet-4-6"),
+    test_cases: Path = typer.Option(Path("eval/test_cases.json"), "--test-cases", "-t", help="Path to test cases JSON"),
+    tag: Optional[List[str]] = typer.Option(None, "--tag", help="Filter to cases with this tag (repeatable)"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Print each case result as it runs"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Save full results to JSON file"),
+):
+    """Evaluate planner quality across models using labelled test cases."""
+    import sys as _sys
+    _project_root = str(Path(__file__).parent.parent)
+    if _project_root not in _sys.path:
+        _sys.path.insert(0, _project_root)
+    from eval.models import get_adapter, estimate_cost
+    from eval.runner import load_cases, run_eval
+
+    models = model or ["gpt-4o"]
+
+    try:
+        cases = load_cases(test_cases, filter_tags=list(tag) if tag else None)
+    except FileNotFoundError:
+        console.print(f"[red]Test cases file not found:[/red] {test_cases}")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]Running eval:[/bold] {len(cases)} cases  ×  {len(models)} model(s)\n")
+
+    adapters = []
+    for m in models:
+        try:
+            adapters.append(get_adapter(m))
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1)
+
+    all_results = run_eval(adapters, cases, verbose=verbose)
+
+    # --- Per-model detailed table ---
+    for model_name, results in all_results.items():
+        table = Table(
+            title=f"Eval — {model_name}  ({len(results)} cases)",
+            box=box.ROUNDED, show_lines=False,
+        )
+        table.add_column("Case", style="white", min_width=28)
+        table.add_column("Tags", style="dim", min_width=16)
+        table.add_column("F1",  justify="right", width=6)
+        table.add_column("P",   justify="right", width=6)
+        table.add_column("R",   justify="right", width=6)
+        table.add_column("ms",  justify="right", width=6)
+        table.add_column("Tokens", justify="right", width=8)
+
+        for r in results:
+            tick = "[green]✓[/green]" if r.passed else "[red]✗[/red]"
+            label = f"{tick} {r.case_id}"
+            tags_str = ", ".join(r.tags[:3])
+            err = f"  [red dim]{r.error[:40]}[/red dim]" if r.error else ""
+            table.add_row(
+                label + err,
+                tags_str,
+                f"{r.f1:.2f}",
+                f"{r.precision:.2f}",
+                f"{r.recall:.2f}",
+                str(r.latency_ms),
+                str(r.prompt_tokens + r.completion_tokens),
+            )
+
+        console.print(table)
+
+        # Failures detail
+        failures = [r for r in results if not r.passed]
+        if failures:
+            console.print("[dim]Failures:[/dim]")
+            for r in failures:
+                if r.error:
+                    console.print(f"  [red]✗[/red] {r.case_id}: [red]{r.error[:80]}[/red]")
+                else:
+                    missed = [f"{o['action']}({list(o.get('params',{}).values())})" for o in r.missed_ops]
+                    extra  = [f"{o['action']}({list(o.get('params',{}).values())})" for o in r.extra_ops]
+                    if missed:
+                        console.print(f"  [red]✗[/red] {r.case_id}  missed: [yellow]{', '.join(missed)}[/yellow]")
+                    if extra:
+                        console.print(f"       extra:  [dim]{', '.join(extra)}[/dim]")
+
+        passed = sum(1 for r in results if r.passed)
+        avg_f1 = sum(r.f1 for r in results) / len(results)
+        avg_ms = sum(r.latency_ms for r in results) / len(results)
+        total_prompt = sum(r.prompt_tokens for r in results)
+        total_comp   = sum(r.completion_tokens for r in results)
+        cost = estimate_cost(model_name, total_prompt, total_comp)
+        console.print(
+            f"\n  [bold]{passed}/{len(results)} passed[/bold] ({100*passed//len(results)}%)  "
+            f"avg F1: [cyan]{avg_f1:.2f}[/cyan]  "
+            f"avg latency: [cyan]{avg_ms:.0f}ms[/cyan]  "
+            f"est. cost: [cyan]~${cost:.3f}[/cyan]\n"
+        )
+
+    # --- Multi-model comparison summary ---
+    if len(all_results) > 1:
+        cmp = Table(title="Comparison", box=box.SIMPLE_HEAVY)
+        cmp.add_column("Model",      style="bold", min_width=28)
+        cmp.add_column("Passed",     justify="right")
+        cmp.add_column("Avg F1",     justify="right")
+        cmp.add_column("Avg ms",     justify="right")
+        cmp.add_column("Est. cost",  justify="right")
+
+        for model_name, results in all_results.items():
+            passed   = sum(1 for r in results if r.passed)
+            avg_f1   = sum(r.f1 for r in results) / len(results)
+            avg_ms   = sum(r.latency_ms for r in results) / len(results)
+            cost     = estimate_cost(
+                model_name,
+                sum(r.prompt_tokens for r in results),
+                sum(r.completion_tokens for r in results),
+            )
+            cmp.add_row(
+                model_name,
+                f"{passed}/{len(results)}",
+                f"{avg_f1:.2f}",
+                f"{avg_ms:.0f}ms",
+                f"~${cost:.3f}",
+            )
+        console.print(cmp)
+
+    # --- Optional JSON dump ---
+    if output:
+        import json
+        from dataclasses import asdict
+        dump = {
+            m: [
+                {**{k: v for k, v in vars(r).items() if not k.startswith("_")}}
+                for r in res
+            ]
+            for m, res in all_results.items()
+        }
+        output.write_text(json.dumps(dump, indent=2))
+        console.print(f"[dim]Results saved to {output}[/dim]")
