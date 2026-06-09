@@ -265,6 +265,30 @@ Two ops match if their action is equal (or a known synonym) and all key params m
 
 ---
 
+## Reflection / self-critique loop *(next)*
+
+Currently the planner makes a single LLM call and the result goes straight to the confirm gate. The next step introduces a second LLM call that reviews the plan before the user ever sees it.
+
+```
+Your intent
+      ↓
+  GPT-4o Planner  →  draft ops
+      ↓
+  Critic LLM  ←  "Is this plan correct, minimal, and safe given the cluster state?"
+      ↓
+  approved → confirm gate → execute
+  rejected → back to planner with critique (up to N retries)
+```
+
+The critic checks for:
+- **Correctness** — do the ops actually close the gap between current and desired state?
+- **Minimality** — are there redundant steps (e.g. resizing a pool that's already the right size)?
+- **Safety** — would any op cause unintended downtime given the current workloads?
+
+This turns the agent from a single-shot planner into a **reasoning loop** — the defining characteristic of agentic systems. It also directly addresses the `resize_noop` failure surfaced by the eval harness, where the planner generates ops for an already-satisfied state.
+
+---
+
 ## Diagnostic queries
 
 kube-mind understands plain English health and diagnostic questions. These run read-only Prometheus queries — no confirmation prompt, no cluster changes.
@@ -673,4 +697,5 @@ All code and operation history are local — nothing is lost. Recreate the clust
 | — | `diff` command (terraform-style state preview) | ✅ Done |
 | — | `undo` command (exact inverse from saved before state) | ✅ Done |
 | — | Agent evaluation harness (19 cases, plug-and-play models) | ✅ Done |
-| 10 | Monitor daemon | 🔜 Next |
+| 10 | Reflection / self-critique loop | 🔜 Next |
+| 11 | Monitor daemon | ⏳ Planned |
